@@ -13,14 +13,18 @@ USERNAME = os.environ["imap_username"]
 PASSWORD = os.environ["imap_password"]
 SENDER_EMAIL = "reports@stockdataanalytics.com"
 
-EMAIL_FOLDER = Path("../emails")  # default
-print(os.getenv("system"))
-if os.getenv("system"):
-    if os.getenv("system") == "sirius":
-        EMAIL_FOLDER = Path(os.getenv("DATA_DIR")) / 'emails'
+TESTING = True
+
+if TESTING:
+    EMAIL_FOLDER = Path("../tests/data/eml")  # default
 else:
-    print("os.getenv('system') does not exist")
-print("EMAIL_FOLDER", trim_dir(EMAIL_FOLDER))
+    print(os.getenv("system"))
+    if os.getenv("system"):
+        if os.getenv("system") == "sirius":
+            EMAIL_FOLDER = Path(os.getenv("DATA_DIR")) / 'emails'
+    else:
+        print("os.getenv('system') does not exist")
+    print("EMAIL_FOLDER", trim_dir(EMAIL_FOLDER))
 # Create target folder if it doesn't exist
 if EMAIL_FOLDER.is_dir():
     print(f"saving emails to: {trim_dir(EMAIL_FOLDER)}")
