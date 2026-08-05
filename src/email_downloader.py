@@ -25,7 +25,14 @@ def decode_subject(subject):
             decoded_subject.append(part)
     return "".join(decoded_subject)
 
-def download_emails(imap_server, username, password, target_folder, sender_email, write=True):
+def download_emails(imap_server,
+                    username,
+                    password,
+                    target_folder,
+                    sender_email,
+                    write=True,
+                    n=None,
+                    next_n=None):
     # Connect to the IMAP server
     mail = imaplib.IMAP4_SSL(imap_server)
     mail.login(username, password)
@@ -41,8 +48,14 @@ def download_emails(imap_server, username, password, target_folder, sender_email
     email_ids = messages[0].split()
     print(len(email_ids), "messages found")
 
+    new_download_count = 0
     for i, email_id in enumerate(email_ids):
-        # print(i, email_id)
+        if i == n:
+            break
+        if new_download_count == next_n:
+            break
+        print('fetching', str(i).ljust(3), '\t', end='')
+
         # Fetch the email
         status, msg_data = mail.fetch(email_id, "(RFC822)")
         if status != "OK":
@@ -70,21 +83,22 @@ def download_emails(imap_server, username, password, target_folder, sender_email
         pick_ptr = sanitized_subject.find('Pick')
         clean_subject = sanitized_subject[:pick_ptr + 4].strip()
         filename = f"{date_str}_{clean_subject}.eml"
+        print(filename)
         filepath = os.path.join(target_folder, filename)
 
         # Skip if file already exists
         if os.path.exists(filepath):
-            print(f"Skipping {filename} (already exists)")
+            print(f"\tnot saving {filename} (already exists)")
             continue
 
         # Save the email to a file
         if write:
             with open(filepath, "wb") as f:
                 f.write(msg_data[0][1])
-            print('before trim', target_folder)
-            print(f"Downloaded: {filename} to {trim_dir(target_folder)}")
+            print(f"\tsaving {filename} to {trim_dir(target_folder)}")
             # Mark as read
             mail.store(email_id, "+FLAGS", "\\Seen")
+            new_download_count += 1
         else:
             print(f"not downloading: {filename} to _{trim_dir(target_folder)} because write=False")
 

@@ -36,6 +36,7 @@ from typing import Optional, Union
 import email as _email_module
 from email import policy as _email_policy
 
+import bs4
 from bs4 import BeautifulSoup
 import pandas as pd
 
@@ -402,6 +403,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
 
     return result
 
+
 # def _parse_tip_card(card_td, tip_n: int) -> dict:
 #     """Parse one tip card <td> into a dict."""
 #
@@ -527,7 +529,6 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
 
 def parse_tip_email(
         eml_path: pathlib.Path,
-        html_folder: pathlib.Path = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Parse a single StockDataAnalytics tip email (.eml file).
 
@@ -543,14 +544,6 @@ def parse_tip_email(
     """
     html  = _get_html(eml_path)
     soup  = BeautifulSoup(html, "lxml")
-
-    if html_folder:
-        # save soup to # html_path for ian to eyeball
-        html_path = html_folder / eml_path.name
-        print('writing html of len', len(soup), 'to', html_path)
-        with open(html_path, "w") as f:
-            f.write(str(soup))
-        raise Exception
 
     # Exchange summary
     exc   = _parse_exchange(soup, eml_path)
