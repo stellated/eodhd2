@@ -23,6 +23,10 @@ tips_sqlite2pandas(db, ..., start, end) -> (exchange_df, tips_df)
 The tips() function (fetching OHLCV data around each tip date) lives in
 eodhd_io.py and imports Database from this project.  tips_io.py has no
 dependency on eodhd_io.py.
+
+Note: Numeric scores (e.g., pattern_quality_number) are None for compact cards (tips 4-20).
+Users must follow the URL to the detail page if numeric scores are required.
+
 """
 
 from __future__ import annotations

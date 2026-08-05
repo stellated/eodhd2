@@ -824,6 +824,9 @@ class Database:
 
     api_token is optional if you only use from_csv / from_pandas / from_polars
     and never need to hit the EODHD API.
+
+    If `end` is not specified, it defaults to `cached_max` (the latest date in the table),
+    not date.today()`. This avoids empty results when today's data is not yet available.
     """
 
     def __init__(
