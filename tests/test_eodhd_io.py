@@ -1,3 +1,5 @@
+from unittest import mock
+
 ### **CSV Parsing Tests**
 
 def test_csv2pandas_daily_valid():

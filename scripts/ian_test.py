@@ -45,9 +45,9 @@ print('starting', start)
 # download emails,
 # optional n limits how many emails to fetch (for testing)
 # optional next_n limits how many new emails it downloads (for testing)
-download_emails(
-    IMAP_SERVER, USERNAME, PASSWORD, EMAIL_FOLDER, SENDER_EMAIL, n=None, next_n=None)
-print('done downloading', datetime.now())
+# download_emails(
+#     IMAP_SERVER, USERNAME, PASSWORD, EMAIL_FOLDER, SENDER_EMAIL, n=None, next_n=None)
+# print('done downloading', datetime.now())
 
 # testing extraction of data from emails
 for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
