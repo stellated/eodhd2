@@ -1,3 +1,10 @@
+pandas
+polars
+pyarrow
+exchange_calendars
+requests
+beautifulsoup4
+lxml
 pytest
 pytest-mock
 responses
