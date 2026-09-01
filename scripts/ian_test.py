@@ -20,9 +20,9 @@ TESTING = True
 HTML_FOLDER = None
 CSV_FOLDER = None
 if TESTING:
-    EMAIL_FOLDER = Path("../tests/data/eml")  # default
-    HTML_FOLDER = Path("../tests/data/html")
-    CSV_FOLDER = Path("../tests/data/csv")
+    EMAIL_FOLDER = Path("../scripts/data/eml")  # default
+    HTML_FOLDER = Path("../scripts/data/html")
+    CSV_FOLDER = Path("../scripts/data/csv")
 else:
     print(os.getenv("system"))
     if os.getenv("system"):

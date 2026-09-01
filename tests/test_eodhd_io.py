@@ -1,7 +1,25 @@
+import pytest
+import requests
+from pathlib import Path
+import pandas as pd
+from datetime import date, datetime
 from unittest import mock
+from hypothesis import given, strategies as st, settings
+from hypothesis.extra.pandas import data_frames
 
-### **CSV Parsing Tests**
+# Import functions/classes from eodhd_io.py
+from src.eodhd_io import (
+    csv2pandas_daily,
+    csv2pandas_intraday,
+    pandas2polars,
+    polars2pandas,
+    add_local_time,
+    Database,
+    fetch_daily,
+    fetch_intraday,
+)
 
+# --- Tests for csv2pandas_daily ---
 def test_csv2pandas_daily_valid():
     # Test with a valid daily CSV
     pdf = csv2pandas_daily("AAPL.US", Path("tests/data/csv/sample_daily.csv"))
@@ -13,13 +31,13 @@ def test_csv2pandas_daily_missing_columns():
     with pytest.raises(ValueError, match="Missing required columns"):
         csv2pandas_daily("AAPL.US", Path("tests/data/csv/invalid_daily.csv"))
 
+# --- Tests for csv2pandas_intraday ---
 def test_csv2pandas_intraday_gmtoffset_warning():
     # Test warning for non-zero Gmtoffset
     with pytest.warns(UserWarning, match="Non-zero Gmtoffset"):
         csv2pandas_intraday("AAPL.US", Path("tests/data/csv/sample_intraday.csv"), "5m")
 
-### **Format Conversion Tests**
-
+# --- Tests for pandas/polars round-trip ---
 def test_pandas_polars_roundtrip():
     # Test round-trip: pandas -> polars -> pandas
     pdf = pd.DataFrame({
@@ -36,16 +54,16 @@ def test_pandas_polars_roundtrip():
     })
     df = pandas2polars(pdf)
     pdf2 = polars2pandas(df)
-    assert pdf.equals(pdf2)
+    pd.testing.assert_frame_equal(pdf, pdf2)
 
+# --- Tests for add_local_time ---
 def test_add_local_time():
     # Test add_local_time for intraday DataFrame
     pdf = csv2pandas_intraday("AAPL.US", Path("tests/data/csv/sample_intraday.csv"), "5m")
     pdf_with_time = add_local_time(pdf)
     assert "local_time" in pdf_with_time.columns
 
-### **Database Tests**
-
+# --- Tests for Database ---
 def test_database_from_csv(tmp_path):
     # Test Database.from_csv
     db_path = tmp_path / "test.db"
@@ -61,6 +79,7 @@ def test_database_to_pandas_missing_token():
         with Database(db_path) as db:
             db.to_pandas("daily", code="AAPL.US", interval="1d")
 
+# --- Tests for fetch_daily ---
 @mock.patch("requests.get")
 def test_fetch_daily(mock_get, tmp_path):
     # Mock API response
@@ -68,8 +87,6 @@ def test_fetch_daily(mock_get, tmp_path):
     mock_get.return_value.raise_for_status = lambda: None
     pdf = fetch_daily("AAPL.US", "fake_token")
     assert len(pdf) == 1
-
-### **Network Fetch Tests**
 
 @mock.patch("requests.get")
 def test_fetch_daily_empty(mock_get):
@@ -86,14 +103,22 @@ def test_fetch_daily_error(mock_get):
     with pytest.raises(requests.HTTPError):
         fetch_daily("AAPL.US", "fake_token")
 
-### **Property-Based Tests**
-
-from hypothesis import given, strategies as st
-from hypothesis.extra.pandas import columns, data_frames
-
-@given(df=data_frames(columns=[
-    "code", "timestamp", "datetime", "date", "op", "hi", "lo", "cl", "ac", "vo"
-]))
+# --- Hypothesis Test ---
+@given(
+    df=data_frames({
+        "code": st.text(min_size=1, max_size=10),
+        "timestamp": st.integers(min_value=0),
+        "datetime": st.datetimes(),
+        "date": st.dates(),
+        "op": st.floats(min_value=0),
+        "hi": st.floats(min_value=0),
+        "lo": st.floats(min_value=0),
+        "cl": st.floats(min_value=0),
+        "ac": st.floats(min_value=0),
+        "vo": st.integers(min_value=0),
+    }, rows=st.integers(min_value=1, max_value=100))
+)
+@settings(max_examples=50)
 def test_pandas_polars_roundtrip_hypothesis(df):
     # Ensure all columns are present and types are compatible
     df["timestamp"] = df["timestamp"].astype("int64")
@@ -108,5 +133,4 @@ def test_pandas_polars_roundtrip_hypothesis(df):
 
     df_polars = pandas2polars(df)
     df2 = polars2pandas(df_polars)
-    assert df.equals(df2)
-
+    pd.testing.assert_frame_equal(df, df2)
