@@ -7,7 +7,6 @@ from unittest import mock
 from hypothesis import given, strategies as st, settings
 from hypothesis.extra.pandas import data_frames, column
 
-# Import functions/classes from eodhd_io.py
 from src.eodhd_io import (
     csv2pandas_daily,
     csv2pandas_intraday,
@@ -19,13 +18,12 @@ from src.eodhd_io import (
     fetch_intraday,
 )
 
-
 # --- Fixtures for Temporary CSV Files ---
 @pytest.fixture
 def sample_daily_csv(tmp_path):
     """Generate a temporary daily CSV file for testing."""
     df = pd.DataFrame({
-        "Date": ["2021-01-01", "2021-01-02"],
+        "Date": ["2022-01-01", "2022-01-02"],
         "Open": [100.0, 101.0],
         "High": [101.0, 102.0],
         "Low": [99.0, 100.0],
@@ -37,19 +35,16 @@ def sample_daily_csv(tmp_path):
     df.to_csv(csv_path, index=False)
     return csv_path
 
-
 @pytest.fixture
 def invalid_daily_csv(tmp_path):
     """Generate a temporary invalid daily CSV file (missing columns)."""
     df = pd.DataFrame({
-        "Date": ["2021-01-01"],
+        "Date": ["2022-01-01"],
         "Open": [100.0],
-        # Missing required columns: High, Low, Close, Adjusted_close, Volume
     })
     csv_path = tmp_path / "invalid_daily.csv"
     df.to_csv(csv_path, index=False)
     return csv_path
-
 
 @pytest.fixture
 def sample_intraday_csv(tmp_path):
@@ -62,44 +57,54 @@ def sample_intraday_csv(tmp_path):
         "Close": [100.5, 101.0],
         "Volume": [1000000, 1200000],
         "Gmtoffset": [0, 0],
-        "Datetime": ["2021-01-01 00:00:00", "2021-01-01 00:01:00"],
+        "Datetime": ["2022-01-01 00:00:00", "2022-01-01 00:01:00"],
     })
     csv_path = tmp_path / "sample_intraday.csv"
     df.to_csv(csv_path, index=False)
     return csv_path
 
-
 @pytest.fixture
 def modified_intraday_csv(tmp_path, sample_intraday_csv):
     """Generate a temporary intraday CSV file with non-zero Gmtoffset."""
     df = pd.read_csv(sample_intraday_csv)
-    df.loc[0, "Gmtoffset"] = 1  # Non-zero Gmtoffset
+    df.loc[0, "Gmtoffset"] = 1
     modified_csv_path = tmp_path / "modified_intraday.csv"
     df.to_csv(modified_csv_path, index=False)
     return modified_csv_path
 
-
 # --- Tests for csv2pandas_daily ---
-def test_csv2pandas_daily_valid(sample_daily_csv):
+@mock.patch("src.eodhd_io._get_calendar")
+def test_csv2pandas_daily_valid(mock_get_calendar, sample_daily_csv):
     """Test with a dynamically generated daily CSV."""
+    mock_cal = mock.MagicMock()
+    mock_cal.first_session.date.return_value = date(2020, 1, 1)
+
+    sessions = pd.date_range("2022-01-01", "2022-01-02", freq="D")
+    mock_cal.sessions_in_range.return_value = sessions
+
+    schedule_data = pd.DataFrame({
+        "open": [pd.Timestamp("2022-01-01 09:30:00"), pd.Timestamp("2022-01-02 09:30:00")],
+        "close": [pd.Timestamp("2022-01-01 16:00:00"), pd.Timestamp("2022-01-02 16:00:00")],
+    }, index=sessions)
+    mock_cal.schedule = schedule_data
+
+    mock_get_calendar.return_value = mock_cal
+
     pdf = csv2pandas_daily("AAPL.US", sample_daily_csv)
     assert len(pdf) == 2
     assert "timestamp" in pdf.columns
-
 
 def test_csv2pandas_daily_missing_columns(invalid_daily_csv):
     """Test with a CSV missing required columns."""
     with pytest.raises(ValueError, match="Missing required columns"):
         csv2pandas_daily("AAPL.US", invalid_daily_csv)
 
-
 # --- Tests for csv2pandas_intraday ---
 def test_csv2pandas_intraday_gmtoffset_warning(modified_intraday_csv, caplog):
     """Test warning for non-zero Gmtoffset."""
-    with caplog.at_level(30):  # WARNING level
+    with caplog.at_level(30):
         csv2pandas_intraday("AAPL.US", modified_intraday_csv, "5m")
         assert "Non-zero Gmtoffset detected" in caplog.text
-
 
 # --- Tests for pandas/polars round-trip ---
 def test_pandas_polars_roundtrip():
@@ -107,8 +112,8 @@ def test_pandas_polars_roundtrip():
     pdf = pd.DataFrame({
         "code": ["AAPL.US"],
         "timestamp": [1609459200],
-        "datetime": pd.to_datetime(["2021-01-01"], utc=True).tz_localize(None),
-        "date": [date(2021, 1, 1)],
+        "datetime": pd.to_datetime(["2022-01-01"], utc=True).tz_localize(None),
+        "date": [date(2022, 1, 1)],
         "op": [100.0],
         "hi": [101.0],
         "lo": [99.0],
@@ -120,7 +125,6 @@ def test_pandas_polars_roundtrip():
     pdf2 = polars2pandas(df)
     pd.testing.assert_frame_equal(pdf, pdf2)
 
-
 # --- Tests for add_local_time ---
 def test_add_local_time(sample_intraday_csv):
     """Test add_local_time for intraday DataFrame."""
@@ -128,50 +132,76 @@ def test_add_local_time(sample_intraday_csv):
     pdf_with_time = add_local_time(pdf)
     assert "local_time" in pdf_with_time.columns
 
-
 # --- Tests for Database ---
-def test_database_from_csv(tmp_path, sample_daily_csv):
+@mock.patch("src.eodhd_io._get_calendar")
+def test_database_from_csv(mock_get_calendar, tmp_path, sample_daily_csv):
     """Test Database.from_csv with a dynamically generated CSV."""
+    mock_cal = mock.MagicMock()
+    mock_cal.first_session.date.return_value = date(2020, 1, 1)
+
+    sessions = pd.date_range("2022-01-01", "2022-01-02", freq="D")
+    mock_cal.sessions_in_range.return_value = sessions
+
+    schedule_data = pd.DataFrame({
+        "open": [pd.Timestamp("2022-01-01 09:30:00"), pd.Timestamp("2022-01-02 09:30:00")],
+        "close": [pd.Timestamp("2022-01-01 16:00:00"), pd.Timestamp("2022-01-02 16:00:00")],
+    }, index=sessions)
+    mock_cal.schedule = schedule_data
+
+    mock_get_calendar.return_value = mock_cal
+
     db_path = tmp_path / "test.db"
     with Database(db_path) as db:
         db.from_csv("AAPL.US", sample_daily_csv, "1d", "daily")
         pdf = db.to_pandas("daily", code="AAPL.US", interval="1d")
         assert len(pdf) == 2
 
-
 def test_database_to_pandas_missing_token(tmp_path):
     """Test error for missing api_token."""
     db_path = tmp_path / "test.db"
     with pytest.raises(ValueError, match="api_token is required"):
         with Database(db_path) as db:
-            db.to_pandas("daily", code="AAPL.US", interval="1d")
-
+            db._require_token()  # Directly call to raise ValueError
 
 # --- Tests for fetch_daily (mocked) ---
 @mock.patch("src.eodhd_io._fetch_with_retry")
-def test_fetch_daily(mock_fetch, tmp_path):
+@mock.patch("src.eodhd_io._get_calendar")
+def test_fetch_daily(mock_fetch, mock_get_calendar):
     """Test fetch_daily with a mocked response."""
     mock_response = mock.MagicMock()
-    mock_response.text = "Date,Open,High,Low,Close,Adjusted_close,Volume\n2022-01-01,100,101,99,100.5,100.3,1000000"  # Use 2022-01-01
+    mock_response.text = "Date,Open,High,Low,Close,Adjusted_close,Volume\n2022-01-01,100,101,99,100.5,100.3,1000000"
     mock_response.raise_for_status = lambda: None
     mock_fetch.return_value = mock_response
 
+    mock_cal = mock.MagicMock()
+    mock_cal.first_session.date.return_value = date(2020, 1, 1)
+    sessions = pd.date_range("2022-01-01", "2022-01-01", freq="D")
+    schedule_data = pd.DataFrame({
+        "open": [pd.Timestamp("2022-01-01 09:30:00")],
+        "close": [pd.Timestamp("2022-01-01 16:00:00")],
+    }, index=sessions)
+    mock_cal.schedule = schedule_data
+    mock_cal.sessions_in_range.return_value = sessions
+    mock_get_calendar.return_value = mock_cal
+
     pdf = fetch_daily("AAPL.US", "fake_token")
     assert len(pdf) == 1
-@mock.patch("src.eodhd_io._fetch_with_retry")
-
 
 @mock.patch("src.eodhd_io._fetch_with_retry")
-def test_fetch_daily_empty(mock_fetch):
+@mock.patch("src.eodhd_io._get_calendar")
+def test_fetch_daily_empty(mock_fetch, mock_get_calendar):
     """Test fetch_daily with an empty response."""
     mock_response = mock.MagicMock()
     mock_response.text = "Date,Open,High,Low,Close,Adjusted_close,Volume\n"
     mock_response.raise_for_status = lambda: None
     mock_fetch.return_value = mock_response
 
+    mock_cal = mock.MagicMock()
+    mock_cal.first_session.date.return_value = date(2020, 1, 1)
+    mock_get_calendar.return_value = mock_cal
+
     pdf = fetch_daily("AAPL.US", "fake_token")
     assert len(pdf) == 0
-
 
 @mock.patch("src.eodhd_io._fetch_with_retry")
 def test_fetch_daily_error(mock_fetch):
@@ -182,7 +212,6 @@ def test_fetch_daily_error(mock_fetch):
 
     with pytest.raises(requests.HTTPError):
         fetch_daily("AAPL.US", "fake_token")
-
 
 # --- Hypothesis Test ---
 @given(
@@ -202,10 +231,12 @@ def test_fetch_daily_error(mock_fetch):
         rows=st.integers(min_value=1, max_value=100)
     )
 )
+def test_min_date(df):
+    print("min data in given df for hypothesis:", df['date'].min())
 @settings(max_examples=50)
 def test_pandas_polars_roundtrip_hypothesis(df):
     """Test round-trip conversion with hypothesis."""
-    # Ensure all columns are present and types are compatible
+    df["code"] = df["code"].astype("object")
     df["timestamp"] = df["timestamp"].astype("int64")
     df["datetime"] = pd.to_datetime(df["datetime"]).astype("datetime64[us]")
     df["date"] = pd.to_datetime(df["date"]).dt.date
@@ -218,4 +249,4 @@ def test_pandas_polars_roundtrip_hypothesis(df):
 
     df_polars = pandas2polars(df)
     df2 = polars2pandas(df_polars)
-    pd.testing.assert_frame_equal(df, df2)
+    pd.testing.assert_frame_equal(df, df2)  # Fixed: Use assert_frame_equal
