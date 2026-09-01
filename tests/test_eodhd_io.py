@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import date, datetime
 from unittest import mock
 from hypothesis import given, strategies as st, settings
-from hypothesis.extra.pandas import data_frames
+from hypothesis.extra.pandas import data_frames, column
 
 # Import functions/classes from eodhd_io.py
 from src.eodhd_io import (
@@ -151,14 +151,14 @@ def test_database_to_pandas_missing_token(tmp_path):
 @mock.patch("src.eodhd_io._fetch_with_retry")
 def test_fetch_daily(mock_fetch, tmp_path):
     """Test fetch_daily with a mocked response."""
-    # Mock the response
     mock_response = mock.MagicMock()
-    mock_response.text = "Date,Open,High,Low,Close,Adjusted_close,Volume\n2021-01-01,100,101,99,100.5,100.3,1000000"
+    mock_response.text = "Date,Open,High,Low,Close,Adjusted_close,Volume\n2022-01-01,100,101,99,100.5,100.3,1000000"  # Use 2022-01-01
     mock_response.raise_for_status = lambda: None
     mock_fetch.return_value = mock_response
 
     pdf = fetch_daily("AAPL.US", "fake_token")
     assert len(pdf) == 1
+@mock.patch("src.eodhd_io._fetch_with_retry")
 
 
 @mock.patch("src.eodhd_io._fetch_with_retry")
@@ -186,18 +186,21 @@ def test_fetch_daily_error(mock_fetch):
 
 # --- Hypothesis Test ---
 @given(
-    df=data_frames({
-        "code": st.text(min_size=1, max_size=10),
-        "timestamp": st.integers(min_value=0),
-        "datetime": st.datetimes(),
-        "date": st.dates(),
-        "op": st.floats(min_value=0),
-        "hi": st.floats(min_value=0),
-        "lo": st.floats(min_value=0),
-        "cl": st.floats(min_value=0),
-        "ac": st.floats(min_value=0),
-        "vo": st.integers(min_value=0),
-    }, rows=st.integers(min_value=1, max_value=100))
+    df=data_frames(
+        columns=[
+            column("code", elements=st.text(min_size=1, max_size=10)),
+            column("timestamp", elements=st.integers(min_value=0)),
+            column("datetime", elements=st.datetimes()),
+            column("date", elements=st.dates()),
+            column("op", elements=st.floats(min_value=0)),
+            column("hi", elements=st.floats(min_value=0)),
+            column("lo", elements=st.floats(min_value=0)),
+            column("cl", elements=st.floats(min_value=0)),
+            column("ac", elements=st.floats(min_value=0)),
+            column("vo", elements=st.integers(min_value=0)),
+        ],
+        rows=st.integers(min_value=1, max_value=100)
+    )
 )
 @settings(max_examples=50)
 def test_pandas_polars_roundtrip_hypothesis(df):

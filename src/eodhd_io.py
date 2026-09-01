@@ -868,6 +868,8 @@ class Database:
         n_days : number of trading days to return when start is omitted.
                  Falls back to DEFAULT_N_DAYS[interval] if also omitted.
         """
+        is_daily = interval == "1d" if interval else None
+        date_col = "date" if is_daily else "local_date"
         # If enough info is given, check cache and fetch if needed
         if code and interval and self.api_token:
             is_daily = not _is_intraday(interval)
