@@ -387,6 +387,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                             result[colour_mapping[label]] = colour
                             break
                     break
+    print(f"Parsing tip {tip_n}, result: {result}")  #debug
     return result
 
 
@@ -435,13 +436,21 @@ def parse_tip_email(
     tip_rows = []
     for a in all_links:
         href_key = a["href"].split("?")[0]
+        if href_key in seen:
+            logging.warning(f"Duplicate tip detected for URL: {href_key}") #debug
         seen.add(href_key)
         card_td = _find_card_td(a)
         if card_td is None:
             logging.warning(f"Failed to find card for link: {a['href']}")
             continue
         tip_n = len(tip_rows) + 1
+        parsed_tip = _parse_tip_card(card_td, tip_n)
+        print(f"Parsed tip {tip_n}: {parsed_tip}")
         tip_rows.append(_parse_tip_card(card_td, tip_n))
+
+    print(f"Total links: {len(all_links)}") #debug
+    print(f"Unique URLs: {len(seen)}") #debug
+    print(f"Parsed tips: {len(tip_rows)}") #debug
 
     tips_df = pd.DataFrame(tip_rows)
 

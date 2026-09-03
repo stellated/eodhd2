@@ -52,6 +52,9 @@ print('starting', start)
 # testing extraction of data from emails
 for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
     file_prefix = get_file_prefix(eml_file)
+    if not(file_prefix.startswith("2026-04-08") or file_prefix == "2026-04-09"):
+        continue
+    print()
     print('***', file_prefix.ljust(17), end='\t')
 
     if HTML_FOLDER:
