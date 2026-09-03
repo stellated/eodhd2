@@ -435,9 +435,6 @@ def parse_tip_email(
     tip_rows = []
     for a in all_links:
         href_key = a["href"].split("?")[0]
-        if href_key in seen:
-            logging.warning(f"Duplicate tip detected for URL: {href_key}")
-            continue
         seen.add(href_key)
         card_td = _find_card_td(a)
         if card_td is None:
