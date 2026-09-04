@@ -58,18 +58,22 @@ def _hex_to_int(hex_colour: Optional[str]) -> Optional[int]:
     if hex_colour.lower() not in _COLOUR_INT:
         logging.warning(f"Unrecognized colour: {hex_colour}")
         return None
+    print('colour', _COLOUR_INT[hex_colour.lower()]) #debug
     return _COLOUR_INT[hex_colour.lower()]
 
 
 def _extract_colour(style: str) -> Optional[int]:
     """Extract the colour integer from a CSS style string (uses colour: property)."""
+    print('_extract_colour, style:', style, end='\t') #debug
     m = re.search(r'\bcolour\s*:\s*(#\w{6})', style)
+    print('re:', m) #debug
     return _hex_to_int(m.group(1)) if m else None
 
 
 def _extract_bg_colour(style: str) -> Optional[int]:
     """Extract the colour integer from the background/background-colour property."""
     m = re.search(r'background(?:-colour)?\s*:\s*(#\w{6})', style)
+    print('_extract_bg_colour', m.group(1), end='\t') #debug
     return _hex_to_int(m.group(1)) if m else None
 
 

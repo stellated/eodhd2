@@ -59,7 +59,7 @@ for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
 
     if HTML_FOLDER:
         save_html(eml_file, HTML_FOLDER, file_prefix)
-        print('saved html', end='\t')
+        print('saved html') #debug removed end='\t'
 
     exchange_df, tips_df = parse_tip_email(eml_file)
     print('parsed', end='\t')
