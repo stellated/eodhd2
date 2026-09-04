@@ -48,6 +48,7 @@ _COLOUR_INT: dict[str, int] = {
     "#f97316": 3,  # orange
     "#ef4444": 4,  # red
     "#854d0e": 2,  # dark amber (used in some badge backgrounds)
+    "#94a3b8": 0,  # blue (used in holding period)
 }
 
 
@@ -65,14 +66,14 @@ def _hex_to_int(hex_colour: Optional[str]) -> Optional[int]:
 def _extract_colour(style: str) -> Optional[int]:
     """Extract the colour integer from a CSS style string (uses colour: property)."""
     print('_extract_colour, style:', style, end='\t') #debug
-    m = re.search(r'\bcolour\s*:\s*(#\w{6})', style)
+    m = re.search(r'\bcolor\s*:\s*(#\w{6})', style)
     print('re:', m) #debug
     return _hex_to_int(m.group(1)) if m else None
 
 
 def _extract_bg_colour(style: str) -> Optional[int]:
     """Extract the colour integer from the background/background-colour property."""
-    m = re.search(r'background(?:-colour)?\s*:\s*(#\w{6})', style)
+    m = re.search(r'background(?:-color)?\s*:\s*(#\w{6})', style)
     print('_extract_bg_colour', m.group(1), end='\t') #debug
     return _hex_to_int(m.group(1)) if m else None
 
@@ -179,6 +180,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
     ticker = _clean(ticker_a.get_text()) if ticker_a else None
     url = ticker_a["href"] if ticker_a else None
     code = f"{ticker}.US" if ticker else None
+    print('code:', code) #debug
 
     # Initialize all fields as None
     result = {
@@ -377,14 +379,14 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             for label in score_labels:
                 if label in text:
                     # First try background-colour
-                    bg_match = re.search(r'background(-colour)?\s*:\s*(#\w{6})', style, re.IGNORECASE)
+                    bg_match = re.search(r'background(-color)?\s*:\s*(#\w{6})', style, re.IGNORECASE)
                     if bg_match:
                         colour = _hex_to_int(bg_match.group(2))
                         if colour is not None:
                             result[colour_mapping[label]] = colour
                             break
                     # Fallback to colour if background-colour not found
-                    colour_match = re.search(r'colour\s*:\s*(#\w{6})', style, re.IGNORECASE)
+                    colour_match = re.search(r'color\s*:\s*(#\w{6})', style, re.IGNORECASE)
                     if colour_match:
                         colour = _hex_to_int(colour_match.group(1))
                         if colour is not None:
