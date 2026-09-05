@@ -186,12 +186,16 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
         "url": url,
         "pattern_quality_number": None,
         "pattern_quality_colour": None,
+        "pattern_quality_height": None,
         "setup_number": None,
         "setup_colour": None,
+        "setup_height": None,
         "risk_reward_number": None,
         "risk_reward_colour": None,
+        "risk_reward_height": None,
         "context_number": None,
         "context_colour": None,
+        "context_height": None,
     }
 
     if tip_n <= 3:
@@ -268,16 +272,16 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
 
             result["pattern_quality_number"] = _score_val(score_ps[0])
             result["pattern_quality_colour"] = _extract_colour(score_ps[0]["style"])
-            #result["pattern_quality_height"] = 0
+            result["pattern_quality_height"] = 0
             result["setup_number"] = _score_val(score_ps[1])
             result["setup_colour"] = _extract_colour(score_ps[1]["style"])
-            #result["setup_height"] = 0
+            result["setup_height"] = 0
             result["risk_reward_number"] = _score_val(score_ps[2])
             result["risk_reward_colour"] = _extract_colour(score_ps[2]["style"])
-            #result["risk_reward_height"] = 0
+            result["risk_reward_height"] = 0
             result["context_number"] = _score_val(score_ps[3])
             result["context_colour"] = _extract_colour(score_ps[3]["style"])
-            #result["context_height"] = 0
+            result["context_height"] = 0
 
     else:
         # --- New format (tips 4 and above) ---
@@ -353,6 +357,12 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             if stop_match:
                 result["stop"] = float(stop_match.group(1))
 
+        result['pattern_quality_number'] = '0'
+        result['setup_number'] = '0'
+        result['risk_reward_number'] = '0'
+        result['setup_number'] = '0'
+
+
         # For tips 4+, extract colours from the mini score bars
         score_labels = ["PQ", "Set", "R:R", "Ctx"]
         colour_mapping = {
@@ -369,11 +379,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
         }
 
         # Find all <td> elements with background styles in the card
-        print()
-        print('code', code)
         score_bar_td = card_td.find_all("td", {"width": "90"})
-        # print('* score_bar_td:', score_bar_td)
-        # print('* end score_bar_td')
         count = 0
         if score_bar_td:
             for line in str(score_bar_td).split('\n'):
@@ -383,8 +389,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                     pill_height = line.split('height="')[1].split('"')[0]
                     label = score_labels[count]
                     result[colour_mapping[label]] = colour
-                    #result[pill_height_mapping[label]] = pill_height
-                    print(pill_height_mapping[label], pill_height)
+                    result[pill_height_mapping[label]] = pill_height
                     count += 1
                     if count == 4:
                         break
@@ -457,9 +462,13 @@ def parse_tip_email(
         "holding_period_low",
         "holding_period_high",
         "pattern_quality_colour",
+        "pattern_quality_height",
         "setup_colour",
+        "setup_height",
         "risk_reward_colour",
+        "risk_reward_height",
         "context_colour",
+        "context_height",
     ]:
         if col in tips_df.columns:
             tips_df[col] = pd.to_numeric(tips_df[col], errors="coerce").astype("Int64")
@@ -535,12 +544,16 @@ CREATE TABLE IF NOT EXISTS {tablename} (
     url TEXT,
     pattern_quality_number REAL,
     pattern_quality_colour INTEGER,
+    pattern_quality_height INTEGER,
     setup_number REAL,
     setup_colour INTEGER,
+    setup_height INTEGER, 
     risk_reward_number REAL,
     risk_reward_colour INTEGER,
+    risk_reward_height INTEGER,
     context_number REAL,
     context_colour INTEGER,
+    context_height INTEGER, 
     PRIMARY KEY (exchange, tip_date, tip_n)
 );
 """
@@ -559,19 +572,19 @@ INSERT OR REPLACE INTO {tablename} (
     exchange, tip_date, tip_n, code, win_probability, sector, name,
     entry_zone_low, entry_zone_high, target, stop, expected_reward, expected_risk,
     holding_period_low, holding_period_high, url,
-    pattern_quality_number, pattern_quality_colour,
-    setup_number, setup_colour,
-    risk_reward_number, risk_reward_colour,
-    context_number, context_colour
+    pattern_quality_number, pattern_quality_colour, pattern_quality_height,
+    setup_number, setup_colour, setup_height, 
+    risk_reward_number, risk_reward_colour, risk_reward_height,
+    context_number, context_colour, context_height, 
 )
 VALUES (
     :exchange, :tip_date, :tip_n, :code, :win_probability, :sector, :name,
     :entry_zone_low, :entry_zone_high, :target, :stop, :expected_reward, :expected_risk,
     :holding_period_low, :holding_period_high, :url,
-    :pattern_quality_number, :pattern_quality_colour,
-    :setup_number, :setup_colour,
-    :risk_reward_number, :risk_reward_colour,
-    :context_number, :context_colour
+    :pattern_quality_number, :pattern_quality_colour, :pattern_quality_height,
+    :setup_number, :setup_colour, :setup_height, 
+    :risk_reward_number, :risk_reward_colour, :risk_reward_height,
+    :context_number, :context_colour, :context_height, 
 );
 """
 
@@ -677,9 +690,13 @@ def tips_sqlite2pandas(
         "holding_period_low",
         "holding_period_high",
         "pattern_quality_colour",
+        "pattern_quality_height",
         "setup_colour",
+        "setup_height",
         "risk_reward_colour",
+        "risk_reward_height",
         "context_colour",
+        "context_height",
     ]
     for col in tip_int_cols:
         if col in tips_df.columns:
