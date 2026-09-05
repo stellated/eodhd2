@@ -42,15 +42,14 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s -
 # Colour mapping (hex -> integer)
 # ---------------------------------------------------------------------------
 _COLOUR_INT: dict[str, int] = {
-    "#22c55e": 1,  # green
-    "#eab308": 2,  # yellow
-    "#ca8a04": 2,  # dark yellow/amber (used for regime score text)
-    "#f97316": 3,  # orange
-    "#ef4444": 4,  # red
-    "#854d0e": 2,  # dark amber (used in some badge backgrounds)
-    "#94a3b8": 0,  # blue (used in holding period)
+    "#22c55e": 1,  # green 1
+    "#eab308": 2,  # yellow 2
+    "#ca8a04": 3,  # dark yellow/amber (used for regime score text) 2
+    "#f97316": 4,  # orange 3
+    "#ef4444": 5,  # red 4
+    "#854d0e": 6,  # dark amber (used in some badge backgrounds) 2
+    "#94a3b8": 7,  # blue (used in holding period)
 }
-
 
 def _hex_to_int(hex_colour: Optional[str]) -> Optional[int]:
     """Convert a CSS hex colour to a traffic-light integer (1-4), or None."""
@@ -59,33 +58,24 @@ def _hex_to_int(hex_colour: Optional[str]) -> Optional[int]:
     if hex_colour.lower() not in _COLOUR_INT:
         logging.warning(f"Unrecognized colour: {hex_colour}")
         return None
-    print('colour', _COLOUR_INT[hex_colour.lower()]) #debug
     return _COLOUR_INT[hex_colour.lower()]
 
-
 def _extract_colour(style: str) -> Optional[int]:
-    """Extract the colour integer from a CSS style string (uses colour: property)."""
-    print('_extract_colour, style:', style, end='\t') #debug
-    m = re.search(r'\bcolor\s*:\s*(#\w{6})', style)
-    print('re:', m) #debug
+    """Extract the colour integer from a CSS style string (uses color: property)."""
+    m = re.search(r'\bcolor\s*:\s*(#\w{6})', style, re.IGNORECASE)
     return _hex_to_int(m.group(1)) if m else None
-
 
 def _extract_bg_colour(style: str) -> Optional[int]:
     """Extract the colour integer from the background/background-colour property."""
-    m = re.search(r'background(?:-color)?\s*:\s*(#\w{6})', style)
-    print('_extract_bg_colour', m.group(1), end='\t') #debug
+    m = re.search(r'background(?:-color)?\s*:\s*(#\w{6})', style, re.IGNORECASE)
     return _hex_to_int(m.group(1)) if m else None
-
 
 def _clean(text: str) -> str:
     return " ".join(text.split())
 
-
 # ---------------------------------------------------------------------------
 # HTML extraction from .eml
 # ---------------------------------------------------------------------------
-
 def _get_html(eml_path: pathlib.Path) -> bytes:
     """Extract the HTML body bytes from an .eml file."""
     with open(eml_path, "rb") as f:
@@ -95,11 +85,9 @@ def _get_html(eml_path: pathlib.Path) -> bytes:
             return part.get_payload(decode=True)
     raise ValueError(f"No text/html part found in {eml_path}")
 
-
 # ---------------------------------------------------------------------------
 # Exchange summary parsing
 # ---------------------------------------------------------------------------
-
 def _parse_exchange(soup: BeautifulSoup, eml_path: pathlib.Path) -> dict:
     """Parse the exchange-level summary from the soup of one email."""
     # Exchange from <title>: "[NASDAQ] Stock Data Analytics..."
@@ -167,11 +155,9 @@ def _parse_exchange(soup: BeautifulSoup, eml_path: pathlib.Path) -> dict:
         "regime_colour": regime_colour,
     }
 
-
 # ---------------------------------------------------------------------------
 # Individual tip card parsing
 # ---------------------------------------------------------------------------
-
 def _parse_tip_card(card_td, tip_n: int) -> dict:
     """Parse one tip card <td> into a dict, handling two different HTML formats."""
     # --- Common parsing for both formats ---
@@ -180,7 +166,6 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
     ticker = _clean(ticker_a.get_text()) if ticker_a else None
     url = ticker_a["href"] if ticker_a else None
     code = f"{ticker}.US" if ticker else None
-    print('code:', code) #debug
 
     # Initialize all fields as None
     result = {
@@ -363,7 +348,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             if stop_match:
                 result["stop"] = float(stop_match.group(1))
 
-        # For tips 4+, only extract colours from visual bars (numbers remain NaN)
+        # For tips 4+, extract colours from visual bars (numbers remain NaN)
         score_labels = ["PQ", "Set", "R:R", "Ctx"]
         colour_mapping = {
             "PQ": "pattern_quality_colour",
@@ -371,17 +356,19 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             "R:R": "risk_reward_colour",
             "Ctx": "context_colour"
         }
+
         # Find all elements that might be score indicators
         for element in card_td.find_all(["div", "span", "p"]):
             style = element.get("style", "")
             text = _clean(element.get_text())
+
             # Check if this is a score label
             for label in score_labels:
                 if label in text:
                     # First try background-colour
-                    bg_match = re.search(r'background(-color)?\s*:\s*(#\w{6})', style, re.IGNORECASE)
+                    bg_match = re.search(r'background(?:-color)?\s*:\s*(#\w{6})', style, re.IGNORECASE)
                     if bg_match:
-                        colour = _hex_to_int(bg_match.group(2))
+                        colour = _hex_to_int(bg_match.group(1))
                         if colour is not None:
                             result[colour_mapping[label]] = colour
                             break
@@ -393,18 +380,16 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                             result[colour_mapping[label]] = colour
                             break
                     break
-    return result
 
+    return result
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
 def parse_tip_email(
     eml_path: pathlib.Path,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Parse a single StockDataAnalytics tip email (.eml file).
-
     Returns
     -------
     (exchange_df, tips_df)
@@ -450,7 +435,7 @@ def parse_tip_email(
             continue
         tip_n = len(tip_rows) + 1
         parsed_tip = _parse_tip_card(card_td, tip_n)
-        tip_rows.append(_parse_tip_card(card_td, tip_n))
+        tip_rows.append(parsed_tip)
 
     tips_df = pd.DataFrame(tip_rows)
 
@@ -469,7 +454,7 @@ def parse_tip_email(
         "context_colour",
     ]:
         if col in tips_df.columns:
-            tips_df[col] = pd.to_numeric(tips_df[col], errors="coerce").astype("Int64")  # nullable int
+            tips_df[col] = pd.to_numeric(tips_df[col], errors="coerce").astype("Int64")
 
     for col in [
         "entry_zone_low",
@@ -488,12 +473,10 @@ def parse_tip_email(
 
     return exchange_df, tips_df
 
-
 def parse_tip_emails(
     eml_paths: list[pathlib.Path],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Parse multiple .eml files and concatenate results.
-
     Returns (exchange_df, tips_df) with rows from all emails.
     """
     exc_frames, tip_frames = [], []
@@ -505,11 +488,9 @@ def parse_tip_emails(
     tips_df = pd.concat(tip_frames, ignore_index=True)
     return exchange_df, tips_df
 
-
 # ---------------------------------------------------------------------------
 # Tip email SQLite persistence
 # ---------------------------------------------------------------------------
-
 _DDL_TIP_EXCHANGE = """
 CREATE TABLE IF NOT EXISTS {tablename} (
     exchange TEXT NOT NULL,
@@ -586,7 +567,6 @@ VALUES (
 );
 """
 
-
 def tips_exchange2sqlite(
     exchange_df: pd.DataFrame,
     tips_df: pd.DataFrame,
@@ -595,7 +575,6 @@ def tips_exchange2sqlite(
     tips_tablename: str = "tip_details",
 ) -> None:
     """Write exchange_df and tips_df to SQLite.
-
     INSERT OR REPLACE — idempotent; safe to call after each email import.
     Primary key on exchange table: (exchange, tip_date).
     Primary key on tips table: (exchange, tip_date, tip_n).
@@ -642,7 +621,6 @@ def tips_exchange2sqlite(
         if _own:
             conn.close()
 
-
 def tips_sqlite2pandas(
     db: Union[sqlite3.Connection, str, pathlib.Path],
     exchange_tablename: str = "tip_exchange",
@@ -651,7 +629,6 @@ def tips_sqlite2pandas(
     end: Optional[date] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Read tip tables back from SQLite into pandas DataFrames.
-
     Parameters
     ----------
     start / end : optional date range filter on tip_date (inclusive).
@@ -667,7 +644,6 @@ def tips_sqlite2pandas(
             conditions.append("tip_date <= ?")
             params.append(end.isoformat())
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-
         exchange_df = pd.read_sql(
             f"SELECT * FROM {exchange_tablename} {where}", conn, params=params
         )
