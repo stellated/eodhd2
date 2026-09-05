@@ -601,6 +601,8 @@ def tips_exchange2sqlite(
     Primary key on tips table: (exchange, tip_date, tip_n).
     """
     _own = not isinstance(db, sqlite3.Connection)
+    print('_own', _own)
+    print('db', db, type(db))
     conn = sqlite3.connect(db) if _own else db
     try:
         conn.execute(_DDL_TIP_EXCHANGE.format(tablename=exchange_tablename))

@@ -7,6 +7,7 @@ import pandas as pd
 from email_downloader import *
 from tips_io import parse_tip_email, parse_tip_emails, tips_exchange2sqlite, tips_sqlite2pandas
 from utils import get_file_prefix, save_html, save_csvs
+from eodhd_io import Database
 
 load_dotenv()
 
@@ -16,13 +17,14 @@ PASSWORD = os.environ["imap_password"]
 SENDER_EMAIL = "reports@stockdataanalytics.com"
 
 TESTING = True
-
 HTML_FOLDER = None
 CSV_FOLDER = None
+eodhd_api_token = os.environ["EODHD_API_TOKEN"]
 if TESTING:
     EMAIL_FOLDER = Path("../scripts/data/eml")  # default
     HTML_FOLDER = Path("../scripts/data/html")
     CSV_FOLDER = Path("../scripts/data/csv")
+    DB_FILE = Path("../scripts/data/test.db")
 else:
     print(os.getenv("system"))
     if os.getenv("system"):
@@ -38,6 +40,15 @@ else:
     print(f"saving emails to: {trim_dir(EMAIL_FOLDER)}, (which doesn't exist, creating now)")
     EMAIL_FOLDER.mkdir()
 
+if not DB_FILE.parent.is_dir():
+    print("creating dir for db at:", DB_FILE.parent)
+    DB_FILE.parent.mkdir()
+if DB_FILE.is_file():
+    print("using existing db file at:", DB_FILE)
+else:
+    print("creating db file at:", DB_FILE)
+
+
 start = datetime.now()
 print('starting', start)
 
@@ -51,15 +62,16 @@ print('starting', start)
 
 # testing extraction of data from emails
 for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
-    file_prefix = get_file_prefix(eml_file) #debug
-    if not(file_prefix.startswith("2026-04-08") or file_prefix == "2026-04-09"): #debug
-        continue #debug
-    print() #debug
+    file_prefix = get_file_prefix(eml_file)
+    if not(file_prefix.startswith("2026-04-08") or file_prefix == "2026-04-09"):
+        break
+
+    print()
     print('***', file_prefix.ljust(17), end='\t')
 
     if HTML_FOLDER:
         save_html(eml_file, HTML_FOLDER, file_prefix)
-        print('saved html') #debug removed end='\t'
+        print('saved html', end='\t')
 
     exchange_df, tips_df = parse_tip_email(eml_file)
     print('parsed', end='\t')
@@ -67,6 +79,16 @@ for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
     if CSV_FOLDER:
         save_csvs(exchange_df, tips_df, CSV_FOLDER, file_prefix)
         print('saved csv', end='\t')
+
+    if DB_FILE:
+        db = Database(DB_FILE, eodhd_api_token)
+        print('exchange_df:', type(exchange_df))
+        print(exchange_df)
+        print('tips_df:', type(tips_df))
+        print(tips_df)
+        print()
+        tips_exchange2sqlite(exchange_df, tips_df, db)
+        print('saved sqlite')
 
     print()
 
