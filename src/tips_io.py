@@ -268,12 +268,16 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
 
             result["pattern_quality_number"] = _score_val(score_ps[0])
             result["pattern_quality_colour"] = _extract_colour(score_ps[0]["style"])
+            #result["pattern_quality_height"] = 0
             result["setup_number"] = _score_val(score_ps[1])
             result["setup_colour"] = _extract_colour(score_ps[1]["style"])
+            #result["setup_height"] = 0
             result["risk_reward_number"] = _score_val(score_ps[2])
             result["risk_reward_colour"] = _extract_colour(score_ps[2]["style"])
+            #result["risk_reward_height"] = 0
             result["context_number"] = _score_val(score_ps[3])
             result["context_colour"] = _extract_colour(score_ps[3]["style"])
+            #result["context_height"] = 0
 
     else:
         # --- New format (tips 4 and above) ---
@@ -357,30 +361,33 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             "R:R": "risk_reward_colour",
             "Ctx": "context_colour"
         }
+        pill_height_mapping = {
+            "PQ": "pattern_quality_height",
+            "Set": "setup_height",
+            "R:R": "risk_reward_height",
+            "Ctx": "context_height"
+        }
 
         # Find all <td> elements with background styles in the card
         print()
         print('code', code)
-        print('* card_td', card_td.find_all("td", style=True))
-        for td in card_td.find_all("td", style=True):
-            print("* td", td)
-            style = td.get("style", "")
-            print("* style", style)
-            bg_match = re.search(r'background\s*:\s*(#\w{6})', style, re.IGNORECASE)
-            print("* bg_match", bg_match)
-            if bg_match:
-                # Get the label text from the <p> element inside this <td>
-                p = td.find("p")
-                if p:
-                    label_text = _clean(p.get_text())
-                    for label in score_labels:
-                        if label in label_text:
-                            colour = _hex_to_int(bg_match.group(1))
-                            print("* colour", colour)
-                            if colour is not None:
-                                result[colour_mapping[label]] = colour
-                            break
-        raise Exception
+        score_bar_td = card_td.find_all("td", {"width": "90"})
+        # print('* score_bar_td:', score_bar_td)
+        # print('* end score_bar_td')
+        count = 0
+        if score_bar_td:
+            for line in str(score_bar_td).split('\n'):
+                if '#' in line and '#e5e7e' not in line and '#94a3b8' not in line:
+                    hex = line[line.find('#'): line.find('#') + 7]
+                    colour = _hex_to_int(hex)
+                    pill_height = line.split('height="')[1].split('"')[0]
+                    label = score_labels[count]
+                    result[colour_mapping[label]] = colour
+                    #result[pill_height_mapping[label]] = pill_height
+                    print(pill_height_mapping[label], pill_height)
+                    count += 1
+                    if count == 4:
+                        break
     return result
 
 
