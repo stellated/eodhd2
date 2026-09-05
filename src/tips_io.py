@@ -358,33 +358,31 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             "Ctx": "context_colour"
         }
 
-        # Find the mini score bars table (nested inside <td> elements)
-        print('getting score bars, code = ', code)  # debug
-        score_bar_table = card_td.find("table", {"width": "90"})
-        print(score_bar_table, score_bar_table) #debug
-        if score_bar_table:
-            # Find all <td> elements with background styles inside the score bar table
-            print('find_all()', score_bar_table.find_all("td", style=True)) #debug
-            for td in score_bar_table.find_all("td", style=True):
-                style = td.get("style", "")
-                bg_match = re.search(r'background\s*:\s*(#\w{6})', style, re.IGNORECASE)
-                print('bg_match = ', bg_match) #debug
-                if bg_match:
-                    # Get the label text from the <p> element inside this <td>
-                    p = td.find("p")
-                    if p:
-                        label_text = _clean(p.get_text())
-                        print('label_text = ', label_text) #debug
-                        for label in score_labels:
-                            if label in label_text:
-                                colour = _hex_to_int(bg_match.group(1))
-                                print('colour = ', colour) #debug
-                                if colour is not None:
-                                    result[colour_mapping[label]] = colour
-                                break
-        print() #debug
-
+        # Find all <td> elements with background styles in the card
+        print()
+        print('code', code)
+        print('* card_td', card_td.find_all("td", style=True))
+        for td in card_td.find_all("td", style=True):
+            print("* td", td)
+            style = td.get("style", "")
+            print("* style", style)
+            bg_match = re.search(r'background\s*:\s*(#\w{6})', style, re.IGNORECASE)
+            print("* bg_match", bg_match)
+            if bg_match:
+                # Get the label text from the <p> element inside this <td>
+                p = td.find("p")
+                if p:
+                    label_text = _clean(p.get_text())
+                    for label in score_labels:
+                        if label in label_text:
+                            colour = _hex_to_int(bg_match.group(1))
+                            print("* colour", colour)
+                            if colour is not None:
+                                result[colour_mapping[label]] = colour
+                            break
+        raise Exception
     return result
+
 
 # ---------------------------------------------------------------------------
 # Public API
