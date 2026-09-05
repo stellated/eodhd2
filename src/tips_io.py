@@ -158,6 +158,7 @@ def _parse_exchange(soup: BeautifulSoup, eml_path: pathlib.Path) -> dict:
 # ---------------------------------------------------------------------------
 # Individual tip card parsing
 # ---------------------------------------------------------------------------
+
 def _parse_tip_card(card_td, tip_n: int) -> dict:
     """Parse one tip card <td> into a dict, handling two different HTML formats."""
     # --- Common parsing for both formats ---
@@ -348,7 +349,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             if stop_match:
                 result["stop"] = float(stop_match.group(1))
 
-        # For tips 4+, extract colours from visual bars (numbers remain NaN)
+        # For tips 4+, extract colours from the mini score bars
         score_labels = ["PQ", "Set", "R:R", "Ctx"]
         colour_mapping = {
             "PQ": "pattern_quality_colour",
@@ -357,29 +358,31 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             "Ctx": "context_colour"
         }
 
-        # Find all elements that might be score indicators
-        for element in card_td.find_all(["div", "span", "p"]):
-            style = element.get("style", "")
-            text = _clean(element.get_text())
-
-            # Check if this is a score label
-            for label in score_labels:
-                if label in text:
-                    # First try background-colour
-                    bg_match = re.search(r'background(?:-color)?\s*:\s*(#\w{6})', style, re.IGNORECASE)
-                    if bg_match:
-                        colour = _hex_to_int(bg_match.group(1))
-                        if colour is not None:
-                            result[colour_mapping[label]] = colour
-                            break
-                    # Fallback to colour if background-colour not found
-                    colour_match = re.search(r'color\s*:\s*(#\w{6})', style, re.IGNORECASE)
-                    if colour_match:
-                        colour = _hex_to_int(colour_match.group(1))
-                        if colour is not None:
-                            result[colour_mapping[label]] = colour
-                            break
-                    break
+        # Find the mini score bars table (nested inside <td> elements)
+        print('getting score bars, code = ', code)  # debug
+        score_bar_table = card_td.find("table", {"width": "90"})
+        print(score_bar_table, score_bar_table) #debug
+        if score_bar_table:
+            # Find all <td> elements with background styles inside the score bar table
+            print('find_all()', score_bar_table.find_all("td", style=True)) #debug
+            for td in score_bar_table.find_all("td", style=True):
+                style = td.get("style", "")
+                bg_match = re.search(r'background\s*:\s*(#\w{6})', style, re.IGNORECASE)
+                print('bg_match = ', bg_match) #debug
+                if bg_match:
+                    # Get the label text from the <p> element inside this <td>
+                    p = td.find("p")
+                    if p:
+                        label_text = _clean(p.get_text())
+                        print('label_text = ', label_text) #debug
+                        for label in score_labels:
+                            if label in label_text:
+                                colour = _hex_to_int(bg_match.group(1))
+                                print('colour = ', colour) #debug
+                                if colour is not None:
+                                    result[colour_mapping[label]] = colour
+                                break
+        print() #debug
 
     return result
 
