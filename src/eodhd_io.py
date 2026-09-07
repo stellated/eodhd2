@@ -713,6 +713,17 @@ def tips(
 # Database class
 # ---------------------------------------------------------------------------
 
+def is_connection_closed(conn):
+    # for debugging, tells us if an sqlite.connection is open of closed
+    # now also used in db.__enter__() to open a connection if needed at the start of a with clause
+    try:
+        conn.execute("SELECT 1")
+        return False  # Connection is open
+    except sqlite3.ProgrammingError as e:
+        if "closed" in str(e).lower():
+            return True  # Connection is closed
+        raise  # Re-raise if it's a different error
+
 
 class Database:
     """SQLite-backed local cache for EODHD OHLCV data.
@@ -756,14 +767,22 @@ class Database:
         self.api_token = api_token
         self.conn = sqlite3.connect(self.db_path)
 
+    def __repr__(self):
+        return f"eodhd_io.Database object at {self.db_path}, db.conn = {self.conn}"
+
+
     # --- context manager ---------------------------------------------------
 
     def __enter__(self) -> "Database":
+        if is_connection_closed(self.conn):
+            self.conn = sqlite3.connect(self.db_path)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
         return False
+        # the return False tells the interpreter to re-raise whatever exception got raised
+        # in the context block (the with clause in the calling code)
 
     def close(self) -> None:
         self.conn.close()
