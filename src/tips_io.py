@@ -34,6 +34,7 @@ import email as _email_module
 from email import policy as _email_policy
 from bs4 import BeautifulSoup
 import pandas as pd
+from eodhd_io import Database
 
 # Set up logging
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -591,7 +592,7 @@ VALUES (
 def tips_exchange2sqlite(
     exchange_df: pd.DataFrame,
     tips_df: pd.DataFrame,
-    db: Union[sqlite3.Connection, str, pathlib.Path],
+    db: Union[str, pathlib.Path, Database],
     exchange_tablename: str = "tip_exchange",
     tips_tablename: str = "tip_details",
 ) -> None:
@@ -600,13 +601,13 @@ def tips_exchange2sqlite(
     Primary key on exchange table: (exchange, tip_date).
     Primary key on tips table: (exchange, tip_date, tip_n).
     """
-    _own = not isinstance(db, sqlite3.Connection)
-    print('_own', _own)
-    print('db', db, type(db))
-    conn = sqlite3.connect(db) if _own else db
+    if isinstance(db, Database):
+        pass
+    elif isinstance(db, (str, pathlib.Path)):
+        db = Database(db)
     try:
-        conn.execute(_DDL_TIP_EXCHANGE.format(tablename=exchange_tablename))
-        conn.execute(_DDL_TIP_DETAILS.format(tablename=tips_tablename))
+        db.conn.execute(_DDL_TIP_EXCHANGE.format(tablename=exchange_tablename))
+        db.conn.execute(_DDL_TIP_DETAILS.format(tablename=tips_tablename))
 
         for row in exchange_df.itertuples(index=False):
             d = dict(row._asdict())
@@ -615,7 +616,7 @@ def tips_exchange2sqlite(
                 if isinstance(row.tip_date, date)
                 else str(row.tip_date)
             )
-            conn.execute(
+            db.conn.execute(
                 _INSERT_TIP_EXCHANGE.format(tablename=exchange_tablename), d
             )
 
@@ -636,13 +637,16 @@ def tips_exchange2sqlite(
                     pass
                 if hasattr(v, "item"):  # numpy/pandas scalar → Python native
                     d[k] = v.item()
-            conn.execute(
+            print("debug")
+            print(_INSERT_TIP_DETAILS.format(tablename=tips_tablename))
+            for k in d.keys():
+                print(k, d[k])
+            db.conn.execute(
                 _INSERT_TIP_DETAILS.format(tablename=tips_tablename), d
             )
-        conn.commit()
+        db.conn.commit()
     finally:
-        if _own:
-            conn.close()
+        db.conn.close()
 
 def tips_sqlite2pandas(
     db: Union[sqlite3.Connection, str, pathlib.Path],
