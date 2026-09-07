@@ -736,9 +736,23 @@ class Database:
     """
 
     def __init__(
-        self, db_path: Union[str, pathlib.Path], api_token: Optional[str] = None
+            self,
+            db_path: Union[str, pathlib.Path],
+            api_token: Optional[str] = None,
+            delete_db = False
     ) -> None:
         self.db_path = pathlib.Path(db_path)
+        if delete_db and self.db_path.exists():
+            print("deleting db at:", self.db_path)
+            self.db_path.unlink()
+        if not self.db_path.parent.is_dir():
+            print("creating dir for db at:", self.db_path.parent)
+            self.db_path.parent.mkdir()
+        if self.db_path.is_file():
+            print("using existing db file at:", self.db_path)
+        else:
+            print("creating db file at:", self.db_path)
+
         self.api_token = api_token
         self.conn = sqlite3.connect(self.db_path)
 

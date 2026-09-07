@@ -360,7 +360,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
         result['pattern_quality_number'] = '0'
         result['setup_number'] = '0'
         result['risk_reward_number'] = '0'
-        result['setup_number'] = '0'
+        result['context_number'] = '0'
 
 
         # For tips 4+, extract colours from the mini score bars

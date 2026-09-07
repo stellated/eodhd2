@@ -25,6 +25,7 @@ if TESTING:
     HTML_FOLDER = Path("../scripts/data/html")
     CSV_FOLDER = Path("../scripts/data/csv")
     DB_FILE = Path("../scripts/data/test.db")
+    DELETE_DB = True
 else:
     print(os.getenv("system"))
     if os.getenv("system"):
@@ -40,27 +41,12 @@ else:
     print(f"saving emails to: {trim_dir(EMAIL_FOLDER)}, (which doesn't exist, creating now)")
     EMAIL_FOLDER.mkdir()
 
-if not DB_FILE.parent.is_dir():
-    print("creating dir for db at:", DB_FILE.parent)
-    DB_FILE.parent.mkdir()
-if DB_FILE.is_file():
-    print("using existing db file at:", DB_FILE)
-else:
-    print("creating db file at:", DB_FILE)
-
-
 start = datetime.now()
 print('starting', start)
 
+if DB_FILE:
+    db = Database(DB_FILE, eodhd_api_token, delete_db = DELETE_DB)
 
-# download emails,
-# optional n limits how many emails to fetch (for testing)
-# optional next_n limits how many new emails it downloads (for testing)
-# download_emails(
-#     IMAP_SERVER, USERNAME, PASSWORD, EMAIL_FOLDER, SENDER_EMAIL, n=None, next_n=None)
-# print('done downloading', datetime.now())
-
-# testing extraction of data from emails
 for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
     file_prefix = get_file_prefix(eml_file)
     if not(file_prefix.startswith("2026-04-08") or file_prefix == "2026-04-09"):
@@ -81,11 +67,10 @@ for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
         print('saved csv', end='\t')
 
     if DB_FILE:
-        db = Database(DB_FILE, eodhd_api_token)
         print('exchange_df:', type(exchange_df))
-        print(exchange_df)
+        print(exchange_df.head())
         print('tips_df:', type(tips_df))
-        print(tips_df)
+        print(tips_df.head())
         print()
         tips_exchange2sqlite(exchange_df, tips_df, db)
         print('saved sqlite')
