@@ -137,7 +137,7 @@ def _parse_exchange(soup: BeautifulSoup, eml_path: pathlib.Path) -> dict:
             elif month_pct is None:
                 month_pct = val
                 month_colour = col
-        elif txt in ("Elevated", "Low", "Moderate", "High"):
+        elif txt in ("Elevated", "Low", "Moderate", "High", "Normal"):
             vol_str = txt
         elif re.match(r'^-?\d+\.\d+$', txt) and regime_score is None:
             regime_score = float(txt)
@@ -607,46 +607,43 @@ def tips_exchange2sqlite(
         db = Database(db)
     # the with gives cleanup on exception automatically by calling db._exit__()
     # print(f"before try, db.conn is closed: {is_connection_closed(db.conn)}") # debug
-    try:
-        with db:
-            # print(f"within with, db.conn is closed: {is_connection_closed(db.conn)}") # debug
-            db.conn.execute(_DDL_TIP_EXCHANGE.format(tablename=exchange_tablename))
-            db.conn.execute(_DDL_TIP_DETAILS.format(tablename=tips_tablename))
 
-            for row in exchange_df.itertuples(index=False):
-                d = dict(row._asdict())
-                d["tip_date"] = (
-                    row.tip_date.isoformat()
-                    if isinstance(row.tip_date, date)
-                    else str(row.tip_date)
-                )
-                db.conn.execute(
-                    _INSERT_TIP_EXCHANGE.format(tablename=exchange_tablename), d
-                )
+    db.conn.execute(_DDL_TIP_EXCHANGE.format(tablename=exchange_tablename))
+    db.conn.execute(_DDL_TIP_DETAILS.format(tablename=tips_tablename))
 
-            for row in tips_df.itertuples(index=False):
-                d = dict(row._asdict())
-                d["tip_date"] = (
-                    row.tip_date.isoformat()
-                    if isinstance(row.tip_date, date)
-                    else str(row.tip_date)
-                )
-                # Convert pandas NA / numpy int types to plain Python for sqlite3
-                for k, v in d.items():
-                    try:
-                        if pd.isna(v):
-                            d[k] = None
-                            continue
-                    except (TypeError, ValueError):
-                        pass
-                    if hasattr(v, "item"):  # numpy/pandas scalar → Python native
-                        d[k] = v.item()
-                db.conn.execute(
-                    _INSERT_TIP_DETAILS.format(tablename=tips_tablename), d
-                )
-            db.conn.commit()
-    finally:
-        db.close()
+    for row in exchange_df.itertuples(index=False):
+        d = dict(row._asdict())
+        d["tip_date"] = (
+            row.tip_date.isoformat()
+            if isinstance(row.tip_date, date)
+            else str(row.tip_date)
+        )
+        db.conn.execute(
+            _INSERT_TIP_EXCHANGE.format(tablename=exchange_tablename), d
+        )
+
+    for row in tips_df.itertuples(index=False):
+        d = dict(row._asdict())
+        d["tip_date"] = (
+            row.tip_date.isoformat()
+            if isinstance(row.tip_date, date)
+            else str(row.tip_date)
+        )
+        # Convert pandas NA / numpy int types to plain Python for sqlite3
+        for k, v in d.items():
+            try:
+                if pd.isna(v):
+                    d[k] = None
+                    continue
+            except (TypeError, ValueError):
+                pass
+            if hasattr(v, "item"):  # numpy/pandas scalar → Python native
+                d[k] = v.item()
+        db.conn.execute(
+            _INSERT_TIP_DETAILS.format(tablename=tips_tablename), d
+        )
+    db.conn.commit()
+
 
 def tips_sqlite2pandas(
     db: Union[sqlite3.Connection, str, pathlib.Path],

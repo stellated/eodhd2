@@ -7,7 +7,7 @@ import pandas as pd
 from email_downloader import *
 from tips_io import parse_tip_email, parse_tip_emails, tips_exchange2sqlite, tips_sqlite2pandas
 from utils import get_file_prefix, save_html, save_csvs
-from eodhd_io import Database
+from eodhd_io import Database, pandas2polars
 
 load_dotenv()
 
@@ -59,22 +59,39 @@ for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
         save_html(eml_file, HTML_FOLDER, file_prefix)
         print('saved html', end='\t')
 
-    exchange_df, tips_df = parse_tip_email(eml_file)
+    exchange_pdf, tips_pdf = parse_tip_email(eml_file)
     print('parsed', end='\t')
 
     if CSV_FOLDER:
-        save_csvs(exchange_df, tips_df, CSV_FOLDER, file_prefix)
+        save_csvs(exchange_pdf, tips_pdf, CSV_FOLDER, file_prefix)
         print('saved csv', end='\t')
 
     if DB_FILE:
-        print('exchange_df:', type(exchange_df))
-        print(exchange_df.head())
-        print('tips_df:', type(tips_df))
-        print(tips_df.head())
-        print()
-        tips_exchange2sqlite(exchange_df, tips_df, db)
-        print('saved sqlite')
+        tips_exchange2sqlite(exchange_pdf, tips_pdf, db)
+        tips_df = pandas2polars(tips_pdf)
+        for i, tip in enumerate(tips_df.iter_rows(named=True)):  # named=True yields dicts instead of tuples
+            if i > 4:
+                break
+            print(tip)
+            db.fetch(
+                tip['code'],
+                '1d',
+                'daily',
+                tip['tip_date'] - timedelta(days=10),
+                tip['tip_date'] + timedelta(days=10),
+            )
+            db.fetch(
+                tip['code'],
+                '5m',
+                'fiveminutely',
+                tip['tip_date'] - timedelta(days=10),
+                tip['tip_date'] + timedelta(days=10),
+            )
+        # exchange_df = pandas2polars(exchange_pdf)
+        # for row in exchange_df.iter_rows(named=True):
+        #     print(row)
 
+        raise Exception("DONE")
     print()
 
 print('done extracting', datetime.now())

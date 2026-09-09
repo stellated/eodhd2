@@ -413,18 +413,31 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
     date/local_date -> pl.Date
     local_time -> pl.Utf8 (if present)
     """
-    date_col = "date" if "date" in pdf.columns else "local_date"
-    pdf2 = pdf.copy()
-    pdf2[date_col] = pdf2[date_col].apply(
-        lambda d: datetime(d.year, d.month, d.day) if isinstance(d, date) else d
-    )
-    df = pl.from_pandas(pdf2)
-    df = df.with_columns([
-        pl.col("datetime").cast(pl.Datetime("us")),
-        pl.col(date_col).cast(pl.Datetime("us")).cast(pl.Date),
-        pl.col("timestamp").cast(pl.Int64),
-        pl.col("vo").cast(pl.Int64),
-    ])
+    print('pdf before pandas2polars')
+    print(pdf.head())
+    print(pdf.dtypes)
+    # if "date" or "local_date" in pdf_columns:
+    if any(col in pdf.columns for col in ['date', 'local_date']):
+        # "date" implies daily data,
+        # "local_date" implies intraday data with datetime primary key and a local_date column
+        # neither implies it's a tip with a tip_date column (string yyyy-mm-dd)
+        # note: Polars' from_pandas() converts yyyy-mm-dd stirngs to type DATE automatically!
+        date_col = "date" if "date" in pdf.columns else "local_date"
+        pdf2 = pdf.copy()
+        pdf2[date_col] = pdf2[date_col].apply(
+            lambda d: datetime(d.year, d.month, d.day) if isinstance(d, date) else d
+        )
+        df = pl.from_pandas(pdf2)
+        df = df.with_columns([
+            pl.col("datetime").cast(pl.Datetime("us")),
+            pl.col(date_col).cast(pl.Datetime("us")).cast(pl.Date),
+            pl.col("timestamp").cast(pl.Int64),
+            pl.col("vo").cast(pl.Int64),
+        ])
+    else:
+        df = pl.from_pandas(pdf)
+    print("df from pandas2polars:") # debug
+    print(df.head()) # debug
     return df
 
 
