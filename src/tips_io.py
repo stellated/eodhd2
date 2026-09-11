@@ -42,14 +42,23 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s -
 # ---------------------------------------------------------------------------
 # Colour mapping (hex -> integer)
 # ---------------------------------------------------------------------------
+# CHANGED: restored the 1-4 traffic-light scale (had drifted to a flat 1-7
+# sequence, putting orange/red off by one -- see doc/CODE_REVIEW_2026-09-11.md
+# section 1.1). Verified against every captured email under scripts/data/html/:
+# the four per-tip score bars (pattern quality, setup, risk/reward, context)
+# only ever use #22c55e/#eab308/#f97316 -- red is never observed there, but is
+# kept as the natural top of the scale (it's used for the week/month % colour
+# fields, which share this same 1-4 scheme). #ca8a04 is a darker amber variant
+# used only for the regime-score text and aliases to yellow, per
+# doc/TECHNICAL_SPEC.md. #854d0e (market-state badge) and #94a3b8 (generic
+# label grey) were never actually reachable through _hex_to_int in this
+# module's parsing code, so they're dropped rather than carried along.
 _COLOUR_INT: dict[str, int] = {
-    "#22c55e": 1,  # green 1
-    "#eab308": 2,  # yellow 2
-    "#ca8a04": 3,  # dark yellow/amber (used for regime score text) 2
-    "#f97316": 4,  # orange 3
-    "#ef4444": 5,  # red 4
-    "#854d0e": 6,  # dark amber (used in some badge backgrounds) 2
-    "#94a3b8": 7,  # blue (used in holding period)
+    "#22c55e": 1,  # green
+    "#eab308": 2,  # yellow
+    "#ca8a04": 2,  # dark amber alias for yellow (regime score text)
+    "#f97316": 3,  # orange
+    "#ef4444": 4,  # red
 }
 
 def _hex_to_int(hex_colour: Optional[str]) -> Optional[int]:
