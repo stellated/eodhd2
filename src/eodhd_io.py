@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS {tablename} (
     timestamp INTEGER NOT NULL,
     datetime TEXT NOT NULL,
     local_date TEXT NOT NULL,
+    local_time TEXT NOT NULL,
     op REAL,
     hi REAL,
     lo REAL,
@@ -168,7 +169,7 @@ VALUES (:code, :timestamp, :datetime, :date, :op, :hi, :lo, :cl, :ac, :vo);
 """
 
 _INSERT_INTRADAY = """
-INSERT OR REPLACE INTO {tablename} (code, timestamp, datetime, local_date, op, hi, lo, cl, vo)
+INSERT OR REPLACE INTO {tablename} (code, timestamp, datetime, local_date, local_time, op, hi, lo, cl, vo)
 VALUES (:code, :timestamp, :datetime, :local_date, :op, :hi, :lo, :cl, :vo);
 """
 
@@ -293,7 +294,10 @@ def csv2pandas_daily(code: str, csv_path: pathlib.Path) -> pd.DataFrame:
     merged["code"] = code
     merged["timestamp"] = merged["timestamp"].astype("int64")
     cols = ["code", "timestamp", "datetime", "date", "op", "hi", "lo", "cl", "ac", "vo"]
-    return merged[cols].reset_index(drop=True)
+    rval = merged[cols].reset_index(drop=True)
+    # code timestamp datetime date op hi lo cl ac vo
+    # AAPL.US, <big int>, yyyy-mm-dd hh:mm:ss, yyyy-mm-dd, ...
+    return rval
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +336,10 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
         pd.to_datetime(raw["timestamp"], unit="s", utc=True)
         .dt.tz_convert(str(tz)).dt.date
     )
+    raw["local_time"] = (
+        pd.to_datetime(raw["timestamp"], unit="s", utc=True)
+        .dt.tz_convert(str(tz)).dt.time
+    )
     raw = raw.drop(columns=["Timestamp", "Gmtoffset", "Datetime"])
 
     freq_seconds = int(pd.tseries.frequencies.to_offset(freq).nanos // 10**9)
@@ -347,6 +355,7 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
             "datetime": pd.to_datetime(slot_ts, unit="s", utc=True)
                 .tz_localize(None).astype("datetime64[us]"),
             "local_date": day,
+            "local_time": pd.to_datetime(slot_ts, unit="s", utc=True).tz_convert(str(tz)).time,
         })
         merged = grid.merge(
             day_df[["timestamp", "op", "hi", "lo", "cl", "vo"]], on="timestamp", how="left"
@@ -358,8 +367,12 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
 
     result = pd.concat(padded_frames, ignore_index=True)
     result["code"] = code
-    cols = ["code", "timestamp", "datetime", "local_date", "op", "hi", "lo", "cl", "vo"]
-    return result[cols].reset_index(drop=True)
+    cols = ["code", "timestamp", "datetime", "local_date", "local_time", "op", "hi", "lo", "cl", "vo"]
+    rval = result[cols].reset_index(drop=True)
+    # code timestamp datetime local_date local_time op hi lo cl vo
+    # AAPL.US, <big int>, yyyy-mm-dd hh:mm:ss, yyyy-mm-dd, hh:mm:ss, ...
+    return rval
+
 
 
 # ---------------------------------------------------------------------------
@@ -413,9 +426,9 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
     date/local_date -> pl.Date
     local_time -> pl.Utf8 (if present)
     """
-    print('pdf before pandas2polars')
-    print(pdf.head())
-    print(pdf.dtypes)
+    print('pandas2polars(), pandas input:')
+    with pd.option_context('display.max_columns', None):
+        print(pdf.head())
     # if "date" or "local_date" in pdf_columns:
     if any(col in pdf.columns for col in ['date', 'local_date']):
         # "date" implies daily data,
@@ -436,8 +449,9 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
         ])
     else:
         df = pl.from_pandas(pdf)
-    print("df from pandas2polars:") # debug
-    print(df.head()) # debug
+    print('pandas2polars rval:')
+    with pl.Config(tbl_cols=-1, tbl_width_chars=-1):
+        print(df.head(2))
     return df
 
 
@@ -468,6 +482,61 @@ def polars2pandas(df: pl.DataFrame) -> pd.DataFrame:
 # 4. pandas2sqlite
 # ---------------------------------------------------------------------------
 
+# def pandas2sqlite(
+#     pdf: pd.DataFrame,
+#     db: Union[sqlite3.Connection, str, pathlib.Path],
+#     tablename: str,
+# ) -> None:
+#     """Write a tidy pandas DataFrame (daily or intraday) to SQLite.
+#     Creates the table if it doesn't exist.
+#     Uses INSERT OR REPLACE so the operation is idempotent.
+#     local_time, if present, is stored as an extra TEXT column added via ALTER TABLE when first encountered.
+#     """
+#     is_daily = "date" in pdf.columns
+#     has_lt = "local_time" in pdf.columns
+#     ddl = _DDL_DAILY if is_daily else _DDL_INTRADAY
+#     insert = _INSERT_DAILY if is_daily else _INSERT_INTRADAY
+#     _own = not isinstance(db, sqlite3.Connection)
+#     conn = sqlite3.connect(db) if _own else db
+#     try:
+#         conn.execute(ddl.format(tablename=tablename))
+#         # Add local_time column if needed and not already present
+#         if has_lt and not is_daily:
+#             existing = {row[1] for row in conn.execute(f"PRAGMA table_info({tablename})")}
+#             if "local_time" not in existing:
+#                 conn.execute(f"ALTER TABLE {tablename} ADD COLUMN local_time TEXT")
+#         rows = []
+#         for row in pdf.itertuples(index=False):
+#             d = dict(row._asdict())
+#             d["datetime"] = row.datetime.strftime("%Y-%m-%d %H:%M:%S")
+#             if is_daily:
+#                 d["date"] = (
+#                     row.date.strftime("%Y-%m-%d") if isinstance(row.date, date) else str(row.date)
+#                 )
+#             else:
+#                 d["local_date"] = (
+#                     row.local_date.strftime("%Y-%m-%d")
+#                     if isinstance(row.local_date, date)
+#                     else str(row.local_date)
+#                 )
+#             d["vo"] = int(row.vo)
+#             rows.append(d)
+#         if has_lt and not is_daily:
+#             insert_lt = (
+#                 insert.rstrip(";")
+#                 .replace("op, hi, lo, cl, vo)", "op, hi, lo, cl, vo, local_time)")
+#                 .replace(":op, :hi, :lo, :cl, :vo);", ":op, :hi, :lo, :cl, :vo, :local_time);")
+#                 + ";"
+#             )
+#             conn.executemany(insert_lt.format(tablename=tablename), rows)
+#         else:
+#             conn.executemany(insert.format(tablename=tablename), rows)
+#         conn.commit()
+#     finally:
+#         if _own:
+#             conn.close()
+
+
 def pandas2sqlite(
     pdf: pd.DataFrame,
     db: Union[sqlite3.Connection, str, pathlib.Path],
@@ -476,21 +545,22 @@ def pandas2sqlite(
     """Write a tidy pandas DataFrame (daily or intraday) to SQLite.
     Creates the table if it doesn't exist.
     Uses INSERT OR REPLACE so the operation is idempotent.
-    local_time, if present, is stored as an extra TEXT column added via ALTER TABLE when first encountered.
+    local_time, if present, is stored as an extra TEXT column added via
+    ALTER TABLE when first encountered (for tables created before it existed).
     """
     is_daily = "date" in pdf.columns
     has_lt = "local_time" in pdf.columns
     ddl = _DDL_DAILY if is_daily else _DDL_INTRADAY
-    insert = _INSERT_DAILY if is_daily else _INSERT_INTRADAY
     _own = not isinstance(db, sqlite3.Connection)
     conn = sqlite3.connect(db) if _own else db
     try:
         conn.execute(ddl.format(tablename=tablename))
-        # Add local_time column if needed and not already present
+
         if has_lt and not is_daily:
             existing = {row[1] for row in conn.execute(f"PRAGMA table_info({tablename})")}
             if "local_time" not in existing:
                 conn.execute(f"ALTER TABLE {tablename} ADD COLUMN local_time TEXT")
+
         rows = []
         for row in pdf.itertuples(index=False):
             d = dict(row._asdict())
@@ -505,23 +575,32 @@ def pandas2sqlite(
                     if isinstance(row.local_date, date)
                     else str(row.local_date)
                 )
+                if has_lt:
+                    lt = row.local_time
+                    d["local_time"] = (
+                        lt.strftime("%H:%M:%S") if isinstance(lt, time) else str(lt)
+                    )
             d["vo"] = int(row.vo)
             rows.append(d)
-        if has_lt and not is_daily:
-            insert_lt = (
-                insert.rstrip(";")
-                .replace("op, hi, lo, cl, vo)", "op, hi, lo, cl, vo, local_time)")
-                .replace(":op, :hi, :lo, :cl, :vo);", ":op, :hi, :lo, :cl, :vo, :local_time);")
-                + ";"
-            )
-            conn.executemany(insert_lt.format(tablename=tablename), rows)
+
+        # Build column list / placeholders from one source of truth,
+        # so column count can never drift between the two halves.
+        if is_daily:
+            cols = ["code", "timestamp", "datetime", "date", "op", "hi", "lo", "cl", "ac", "vo"]
+        elif has_lt:
+            cols = ["code", "timestamp", "datetime", "local_date", "local_time", "op", "hi", "lo", "cl", "vo"]
         else:
-            conn.executemany(insert.format(tablename=tablename), rows)
+            cols = ["code", "timestamp", "datetime", "local_date", "op", "hi", "lo", "cl", "vo"]
+
+        col_list = ", ".join(cols)
+        placeholders = ", ".join(f":{c}" for c in cols)
+        insert = f"INSERT OR REPLACE INTO {tablename} ({col_list}) VALUES ({placeholders});"
+
+        conn.executemany(insert, rows)
         conn.commit()
     finally:
         if _own:
             conn.close()
-
 
 # ---------------------------------------------------------------------------
 # 5. sqlite2pandas
@@ -598,6 +677,8 @@ def fetch_daily(
         params += f"&to={to_date.isoformat()}"
     url = f"{EODHD_BASE}/eod/{code}?{params}"
     raw_csv = _eodhd_fetch_csv(url)
+    # Date Open High Low Close Adjusted_close Volume
+    # yyyy-mm-dd ...
     # Write to a temp buffer so csv2pandas_daily can process it normally
     buf = io.StringIO()
     raw_csv.to_csv(buf, index=False)
@@ -729,6 +810,7 @@ def tips(
 def is_connection_closed(conn):
     # for debugging, tells us if an sqlite.connection is open of closed
     # now also used in db.__enter__() to open a connection if needed at the start of a with clause
+    # I think I've dispensed with this crap
     try:
         conn.execute("SELECT 1")
         return False  # Connection is open

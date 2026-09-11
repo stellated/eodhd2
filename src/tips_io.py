@@ -605,8 +605,6 @@ def tips_exchange2sqlite(
         pass
     elif isinstance(db, (str, pathlib.Path)):
         db = Database(db)
-    # the with gives cleanup on exception automatically by calling db._exit__()
-    # print(f"before try, db.conn is closed: {is_connection_closed(db.conn)}") # debug
 
     db.conn.execute(_DDL_TIP_EXCHANGE.format(tablename=exchange_tablename))
     db.conn.execute(_DDL_TIP_DETAILS.format(tablename=tips_tablename))

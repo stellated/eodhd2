@@ -72,7 +72,6 @@ for eml_file in sorted(list(EMAIL_FOLDER.glob("*.eml"))):
         for i, tip in enumerate(tips_df.iter_rows(named=True)):  # named=True yields dicts instead of tuples
             if i > 4:
                 break
-            print(tip)
             db.fetch(
                 tip['code'],
                 '1d',
