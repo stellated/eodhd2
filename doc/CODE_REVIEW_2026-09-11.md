@@ -66,8 +66,8 @@ Verified by re-running `parse_tip_email()` against the 2026-04-08 NASDAQ email: 
 risk_reward_colour now reads `2` (was `4`), FLY's context_colour now reads `3` (was `5`), no
 nulls introduced, and week/month/regime colour extraction is unaffected.
 
-### 1.2 Compact tip cards store `'0'` instead of `None` for numeric scores
-`src/tips_io.py:361-364` (inside `_parse_tip_card`, compact-card branch):
+### 1.2 Compact tip cards store `'0'` instead of `None` for numeric scores — RESOLVED 2026-09-12
+`src/tips_io.py:361-364` (inside `_parse_tip_card`, compact-card branch) used to have:
 
 ```python
 result['pattern_quality_number'] = '0'
@@ -90,6 +90,20 @@ will treat every compact-card tip (17 of the 20 tips per email, per the June+ fo
 having a real, terrible score of `0` rather than "unknown." For a backtesting pipeline this
 is a real risk of silently biasing results rather than raising the missing-data flag the
 codebase otherwise takes care to document.
+
+**Resolution:** Superseded by a broader redesign rather than a narrow fix. Forensic analysis
+of the score bar's rendering (across all 166 captured emails) showed the compact-card bar
+height is not just a colour indicator — it's a deterministic, invertible encoding of the
+same score the full cards print as a number (fixed per-quality maximums summing to the
+newsletter's own "Total Score: X / 98"; a fixed 24px box; `score = height * max / 24`).
+Rather than just fixing the `'0'` bug in place, the `..._number`/`..._height` column pairs
+were unified into a single `..._score` column per quality — exact for tip_n 1-3, estimated
+(±0.75-1.7 points depending on category) for tip_n 4-20 — with the parser now bounds- and
+colour-cross-checking every score it produces and logging (not raising) on any anomaly. See
+`doc/DESIGN_DECISIONS.md` ("Unified per-quality score column") for the full writeup, and
+`doc/LIMITATIONS.md` for the precision caveat. Verified by re-running the new parser across
+all 166 archived emails: zero warnings logged, and the worked STRO/FLY/FROG/PSNY/BETR
+example from that analysis reproduces exactly.
 
 **Fix:** set these four fields to `None` (matching the `full`-card branch behaviour and the
 struct already documented everywhere else).

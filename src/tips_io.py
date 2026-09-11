@@ -9,6 +9,16 @@ Colour fields use an integer traffic-light scale:
     3 = orange (#f97316)
     4 = red (#ef4444)
 
+Each tip has four quality scores -- pattern_quality_score, setup_score,
+risk_reward_score, context_score -- each with its own maximum (see
+CATEGORY_MAX) and its own colour column. For the "full" cards (tip_n 1-3)
+the score is the newsletter's own printed number, exact. For "compact"
+cards (tip_n 4-20) the newsletter shows only a coloured bar, no number, so
+the score is *estimated* from the bar's filled pixel height (see
+_height_to_score). The estimate's precision is roughly +/-0.75-1.7 points
+depending on category -- see doc/LIMITATIONS.md. Both cases fill in the same
+column; nothing downstream needs to know which kind of card a row came from.
+
 Public API ----------
     parse_tip_email(eml_path) -> (exchange_df, tips_df)
     parse_tip_emails([paths]) -> (exchange_df, tips_df) concatenated
@@ -17,9 +27,6 @@ Public API ----------
 
 The tips() function (fetching OHLCV data around each tip date) lives in eodhd_io.py
 and imports Database from this project. tips_io.py has no dependency on eodhd_io.py.
-
-Note: Numeric scores (e.g., pattern_quality_number) are None for compact cards (tips 4-20).
-Users must follow the URL to the detail page if numeric scores are required.
 """
 from __future__ import annotations
 
@@ -82,6 +89,118 @@ def _extract_bg_colour(style: str) -> Optional[int]:
 
 def _clean(text: str) -> str:
     return " ".join(text.split())
+
+# ---------------------------------------------------------------------------
+# Score-bar constants (empirically derived -- see doc/DESIGN_DECISIONS.md)
+# ---------------------------------------------------------------------------
+# Maximum possible value for each of the four per-tip quality scores.
+# Confirmed by every "Total Score: X / 98" seen across all 166 captured
+# emails (the denominator is 98 with zero exceptions), cross-checked by
+# fitting height = floor(score * BOX_HEIGHT_FULL / max) against every
+# (score, height) pair on the full-detail cards -- a unique exact fit for
+# Setup (20) and Risk/Reward (18); Pattern Quality (40) and Context (20)
+# resolved via the /98 total once Setup and Risk/Reward are pinned down.
+CATEGORY_MAX: dict[str, float] = {
+    "pattern_quality": 40,
+    "setup": 20,
+    "risk_reward": 18,
+    "context": 20,
+}
+
+# Pixel height of the score bar's outer box in each card format. Constant
+# across every category and every one of the 166 captured emails.
+BOX_HEIGHT_FULL = 40     # tips 1-3 (full-detail cards: printed number + bar)
+BOX_HEIGHT_COMPACT = 24  # tips 4-20 (compact cards: bar only, no number)
+
+# Colour-bucket thresholds, expressed as a fraction of a category's max.
+# Verified against all 13,040 score bars in the captured corpus with zero
+# exceptions: green never below 0.75, yellow never below 0.50 or above
+# ~0.71, orange never above 0.45. Red (#ef4444) was never observed on any
+# of the four per-tip quality scores in the corpus -- it's used elsewhere
+# (week/month % colour), so it is not derivable from a score here.
+COLOUR_THRESHOLD_GREEN = 0.75
+COLOUR_THRESHOLD_YELLOW = 0.50
+
+
+def _height_to_score(height_filled: int, category: str, box_height: int) -> float:
+    """Convert a score bar's filled pixel height to an estimated score.
+    Rounded to 1 decimal place -- matches the precision the full-detail
+    cards actually print for Risk/Reward and Context.
+    """
+    return round(height_filled * CATEGORY_MAX[category] / box_height, 1)
+
+
+def _score_to_colour(score: float, category: str) -> int:
+    """Return the traffic-light integer (1=green, 2=yellow, 3=orange) implied
+    by a score, using the thresholds observed throughout the captured email
+    corpus. Never returns 4 (red): no per-tip quality score in the observed
+    data ever fell in a band low enough to justify it.
+    """
+    fraction = score / CATEGORY_MAX[category]
+    if fraction >= COLOUR_THRESHOLD_GREEN:
+        return 1
+    if fraction >= COLOUR_THRESHOLD_YELLOW:
+        return 2
+    return 3
+
+
+def _check_score_bounds(score: Optional[float], category: str, card_desc: str) -> None:
+    """Log (not raise) if a parsed/estimated score falls outside [0, max] --
+    would indicate the newsletter's scoring rubric has changed."""
+    if score is None:
+        return
+    category_max = CATEGORY_MAX[category]
+    if not (0 <= score <= category_max):
+        logging.warning(
+            f"{card_desc}: {category} score {score} is outside the expected "
+            f"[0, {category_max}] range -- newsletter format may have changed."
+        )
+
+
+def _check_colour_consistency(
+    score: Optional[float], parsed_colour: Optional[int], category: str, card_desc: str
+) -> None:
+    """Log (not raise) if the colour parsed from the HTML disagrees with the
+    colour implied by the score under the 75%/50% threshold rule. For full
+    cards this is an independent cross-check (score and colour come from
+    separate HTML elements); for compact cards it's closer to a
+    self-consistency check, since both the estimated score and the parsed
+    colour derive from the same pixel height.
+    """
+    if score is None or parsed_colour is None:
+        return
+    derived = _score_to_colour(score, category)
+    if derived != parsed_colour:
+        logging.warning(
+            f"{card_desc}: {category} parsed colour {parsed_colour} does not "
+            f"match colour {derived} derived from score {score} "
+            f"(max {CATEGORY_MAX[category]}) -- check for a newsletter format change."
+        )
+
+
+def _check_total_score(card_td, scores: dict, card_desc: str) -> None:
+    """Cross-check a full-detail card's own 'Total Score: X / Y' text against
+    the four parsed category scores. Not persisted -- purely a validation
+    signal that the newsletter's scoring rubric hasn't silently changed.
+    """
+    m = re.search(r'Total Score:\s*([\d.]+)\s*/\s*([\d.]+)', card_td.get_text())
+    if not m:
+        return
+    displayed_total, displayed_max = float(m.group(1)), float(m.group(2))
+    expected_max = sum(CATEGORY_MAX.values())
+    if displayed_max != expected_max:
+        logging.warning(
+            f"{card_desc}: Total Score denominator {displayed_max} != expected "
+            f"{expected_max} (sum of CATEGORY_MAX) -- newsletter scoring rubric "
+            f"may have changed."
+        )
+    if all(v is not None for v in scores.values()):
+        actual_total = sum(scores.values())
+        if abs(actual_total - displayed_total) > 0.01:
+            logging.warning(
+                f"{card_desc}: sum of 4 category scores ({actual_total}) != "
+                f"displayed Total Score ({displayed_total})."
+            )
 
 # ---------------------------------------------------------------------------
 # HTML extraction from .eml
@@ -194,19 +313,16 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
         "holding_period_low": None,
         "holding_period_high": None,
         "url": url,
-        "pattern_quality_number": None,
+        "pattern_quality_score": None,
         "pattern_quality_colour": None,
-        "pattern_quality_height": None,
-        "setup_number": None,
+        "setup_score": None,
         "setup_colour": None,
-        "setup_height": None,
-        "risk_reward_number": None,
+        "risk_reward_score": None,
         "risk_reward_colour": None,
-        "risk_reward_height": None,
-        "context_number": None,
+        "context_score": None,
         "context_colour": None,
-        "context_height": None,
     }
+    card_desc = f"{code or 'unknown'} tip_n={tip_n}"
 
     if tip_n <= 3:
         # --- Original format (first 3 tips) ---
@@ -267,11 +383,14 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                         result["holding_period_low"] = int(m.group(1))
                         result["holding_period_high"] = int(m.group(2))
 
-        # Score bars: four <p> tags with font-size: 13px font-weight: 700
+        # Score bars: four <p> tags with font-size: 13px font-weight: 700,
+        # in order Pattern Quality, Setup, Risk/Reward, Context.
         score_ps = [
             p for p in card_td.find_all("p", style=True)
             if "13px" in p.get("style", "") and "700" in p.get("style", "")
         ]
+        if len(score_ps) != 4:
+            logging.warning(f"{card_desc}: expected 4 score bars, found {len(score_ps)}.")
         if len(score_ps) >= 4:
             def _score_val(p):
                 txt = _clean(p.get_text())
@@ -280,18 +399,20 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                 except Exception:
                     return None
 
-            result["pattern_quality_number"] = _score_val(score_ps[0])
-            result["pattern_quality_colour"] = _extract_colour(score_ps[0]["style"])
-            result["pattern_quality_height"] = 0
-            result["setup_number"] = _score_val(score_ps[1])
-            result["setup_colour"] = _extract_colour(score_ps[1]["style"])
-            result["setup_height"] = 0
-            result["risk_reward_number"] = _score_val(score_ps[2])
-            result["risk_reward_colour"] = _extract_colour(score_ps[2]["style"])
-            result["risk_reward_height"] = 0
-            result["context_number"] = _score_val(score_ps[3])
-            result["context_colour"] = _extract_colour(score_ps[3]["style"])
-            result["context_height"] = 0
+            categories = ["pattern_quality", "setup", "risk_reward", "context"]
+            for cat, p in zip(categories, score_ps):
+                score = _score_val(p)
+                colour = _extract_colour(p["style"])
+                result[f"{cat}_score"] = score
+                result[f"{cat}_colour"] = colour
+                _check_score_bounds(score, cat, card_desc)
+                _check_colour_consistency(score, colour, cat, card_desc)
+
+            _check_total_score(
+                card_td,
+                {cat: result[f"{cat}_score"] for cat in categories},
+                card_desc,
+            )
 
     else:
         # --- New format (tips 4 and above) ---
@@ -367,42 +488,32 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
             if stop_match:
                 result["stop"] = float(stop_match.group(1))
 
-        result['pattern_quality_number'] = '0'
-        result['setup_number'] = '0'
-        result['risk_reward_number'] = '0'
-        result['context_number'] = '0'
+        # Mini score bars: four <td width="20"> cells in order Pattern
+        # Quality, Setup, Risk/Reward, Context. Each contains a small
+        # <table> with two stacked <td height=...> rows -- the empty
+        # portion, then the coloured filled portion whose height and
+        # background colour we read directly (structured traversal,
+        # not string-splitting the raw HTML).
+        categories = ["pattern_quality", "setup", "risk_reward", "context"]
+        mini_tds = card_td.find_all("td", attrs={"width": "20"})
+        if len(mini_tds) != 4:
+            logging.warning(f"{card_desc}: expected 4 mini score bars, found {len(mini_tds)}.")
 
-
-        # For tips 4+, extract colours from the mini score bars
-        score_labels = ["PQ", "Set", "R:R", "Ctx"]
-        colour_mapping = {
-            "PQ": "pattern_quality_colour",
-            "Set": "setup_colour",
-            "R:R": "risk_reward_colour",
-            "Ctx": "context_colour"
-        }
-        pill_height_mapping = {
-            "PQ": "pattern_quality_height",
-            "Set": "setup_height",
-            "R:R": "risk_reward_height",
-            "Ctx": "context_height"
-        }
-
-        # Find all <td> elements with background styles in the card
-        score_bar_td = card_td.find_all("td", {"width": "90"})
-        count = 0
-        if score_bar_td:
-            for line in str(score_bar_td).split('\n'):
-                if '#' in line and '#e5e7e' not in line and '#94a3b8' not in line:
-                    hex = line[line.find('#'): line.find('#') + 7]
-                    colour = _hex_to_int(hex)
-                    pill_height = line.split('height="')[1].split('"')[0]
-                    label = score_labels[count]
-                    result[colour_mapping[label]] = colour
-                    result[pill_height_mapping[label]] = pill_height
-                    count += 1
-                    if count == 4:
-                        break
+        for cat, td in zip(categories, mini_tds):
+            tbl = td.find("table")
+            if not tbl:
+                continue
+            height_tds = tbl.find_all("td", height=True)
+            if len(height_tds) < 2:
+                continue
+            filled_td = height_tds[1]
+            h_filled = int(filled_td["height"])
+            colour = _extract_bg_colour(filled_td.get("style", ""))
+            score = _height_to_score(h_filled, cat, BOX_HEIGHT_COMPACT)
+            result[f"{cat}_score"] = score
+            result[f"{cat}_colour"] = colour
+            _check_score_bounds(score, cat, card_desc)
+            _check_colour_consistency(score, colour, cat, card_desc)
     return result
 
 
@@ -472,13 +583,9 @@ def parse_tip_email(
         "holding_period_low",
         "holding_period_high",
         "pattern_quality_colour",
-        "pattern_quality_height",
         "setup_colour",
-        "setup_height",
         "risk_reward_colour",
-        "risk_reward_height",
         "context_colour",
-        "context_height",
     ]:
         if col in tips_df.columns:
             tips_df[col] = pd.to_numeric(tips_df[col], errors="coerce").astype("Int64")
@@ -490,10 +597,10 @@ def parse_tip_email(
         "stop",
         "expected_reward",
         "expected_risk",
-        "pattern_quality_number",
-        "setup_number",
-        "risk_reward_number",
-        "context_number",
+        "pattern_quality_score",
+        "setup_score",
+        "risk_reward_score",
+        "context_score",
     ]:
         if col in tips_df.columns:
             tips_df[col] = pd.to_numeric(tips_df[col], errors="coerce")
@@ -552,18 +659,14 @@ CREATE TABLE IF NOT EXISTS {tablename} (
     holding_period_low INTEGER,
     holding_period_high INTEGER,
     url TEXT,
-    pattern_quality_number REAL,
+    pattern_quality_score REAL,
     pattern_quality_colour INTEGER,
-    pattern_quality_height INTEGER,
-    setup_number REAL,
+    setup_score REAL,
     setup_colour INTEGER,
-    setup_height INTEGER, 
-    risk_reward_number REAL,
+    risk_reward_score REAL,
     risk_reward_colour INTEGER,
-    risk_reward_height INTEGER,
-    context_number REAL,
+    context_score REAL,
     context_colour INTEGER,
-    context_height INTEGER, 
     PRIMARY KEY (exchange, tip_date, tip_n)
 );
 """
@@ -582,19 +685,19 @@ INSERT OR REPLACE INTO {tablename} (
     exchange, tip_date, tip_n, code, win_probability, sector, name,
     entry_zone_low, entry_zone_high, target, stop, expected_reward, expected_risk,
     holding_period_low, holding_period_high, url,
-    pattern_quality_number, pattern_quality_colour, pattern_quality_height,
-    setup_number, setup_colour, setup_height, 
-    risk_reward_number, risk_reward_colour, risk_reward_height,
-    context_number, context_colour, context_height
+    pattern_quality_score, pattern_quality_colour,
+    setup_score, setup_colour,
+    risk_reward_score, risk_reward_colour,
+    context_score, context_colour
 )
 VALUES (
     :exchange, :tip_date, :tip_n, :code, :win_probability, :sector, :name,
     :entry_zone_low, :entry_zone_high, :target, :stop, :expected_reward, :expected_risk,
     :holding_period_low, :holding_period_high, :url,
-    :pattern_quality_number, :pattern_quality_colour, :pattern_quality_height,
-    :setup_number, :setup_colour, :setup_height, 
-    :risk_reward_number, :risk_reward_colour, :risk_reward_height,
-    :context_number, :context_colour, :context_height
+    :pattern_quality_score, :pattern_quality_colour,
+    :setup_score, :setup_colour,
+    :risk_reward_score, :risk_reward_colour,
+    :context_score, :context_colour
 );
 """
 
@@ -700,13 +803,9 @@ def tips_sqlite2pandas(
         "holding_period_low",
         "holding_period_high",
         "pattern_quality_colour",
-        "pattern_quality_height",
         "setup_colour",
-        "setup_height",
         "risk_reward_colour",
-        "risk_reward_height",
         "context_colour",
-        "context_height",
     ]
     for col in tip_int_cols:
         if col in tips_df.columns:

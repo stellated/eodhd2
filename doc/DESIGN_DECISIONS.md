@@ -222,31 +222,74 @@ indicator in the email HTML.
 wrong codes. No defensive check exists for this.
 
 ### Two-format parser
-**Decision:** The parser detects full-detail vs compact card format per card
-and delegates to separate _parse_tip_card_full() and _parse_tip_card_compact()
-functions.
+**Decision:** `_parse_tip_card()` detects full-detail vs compact card format
+per card (`tip_n <= 3` vs `tip_n > 3`) and branches internally, rather than
+using two separate functions.
 
 **Reasoning:** The email format changed between April 2026 (all full) and June
-2026 (3 full + 17 compact). A single function with branching would become
-unreadable. Separate functions make the difference explicit and each is
-independently testable.
+2026 (3 full + 17 compact). The two branches share enough structure (both
+populate the same result dict) that a single function with an if/else reads
+more clearly than two functions with a large overlapping field list.
 
 **Risk:** Future email format changes will require updating the parser. The
 format is controlled by the newsletter provider and can change without notice.
 The test suite includes specific value assertions against real emails which
 will catch format changes.
 
-### Numeric score values absent from compact cards
-**Decision:** pattern_quality_number, setup_number, risk_reward_number,
-context_number are None for compact cards. Only bar colours are available.
+### Unified per-quality score column (supersedes "numeric score values absent
+### from compact cards")
+**Decision (2026-09-12):** Each of the four per-tip qualities (pattern
+quality, setup, risk/reward, context) has exactly one score column
+(`pattern_quality_score`, `setup_score`, `risk_reward_score`,
+`context_score`) and one colour column, populated for *every* tip 1-20 —
+not separate `..._number`/`..._height` columns with one half always zero.
 
-**Reasoning:** The compact card format does not include numeric scores, only
-visual bar charts. The bar height is relative and carries no numeric meaning
-extractable from the HTML. Only the fill colour is reliable.
+**Reasoning:** The original decision (below, kept for history) held that
+compact cards (tip_n 4-20) carry no numeric score, only a coloured bar, so
+the number columns were left `None` for them. Forensic analysis of every
+captured email (166 emails, 13,040 individual score bars) showed this bar
+is not just a colour indicator — its rendering is fully deterministic from
+the underlying score:
+- Each quality has a fixed maximum: pattern_quality=40, setup=20,
+  risk_reward=18, context=20 (these sum to 98, matching the newsletter's
+  own "Total Score: X / 98" on every full card with zero exceptions).
+- The bar's outer box is a constant 40px on full cards and 24px on compact
+  cards, regardless of category, and the filled height is always exactly
+  `score / category_max * box_height` (floor-rounded) — confirmed as a
+  unique exact fit for Setup and Risk/Reward, and consistent for Pattern
+  Quality and Context.
+- The colour itself follows a single universal rule across all four
+  categories and both card formats: fill fraction >=0.75 -> green, 0.50-0.74
+  -> yellow, <0.50 -> orange (red never observed on any of the four
+  qualities in the captured corpus). Zero exceptions across all 13,040 bars.
 
-**Implication for backtesting:** If numeric scores are needed for all 20 tips,
-the user must follow the URL to the detail page. This is a data gap that cannot
-be resolved from the email alone.
+This means a compact card's bar height can be inverted back into an
+estimated score using the same box/max constants (see `CATEGORY_MAX`,
+`BOX_HEIGHT_FULL`, `BOX_HEIGHT_COMPACT`, `_height_to_score()` in
+`tips_io.py`), giving one continuous score column across all 20 tips
+instead of a column that's only ever populated for 3 of them.
+
+**Precision caveat:** full-card scores are exact (the newsletter's own
+printed number). Compact-card scores are *estimates* reconstructed from a
+24px-tall bar and are only accurate to roughly +/-0.75-1.7 points depending
+on category (see `doc/LIMITATIONS.md`). Downstream code that needs to tell
+the two apart should compare `tip_n <= 3` rather than assume the column
+means the same precision everywhere.
+
+**Validation, not enforcement:** the parser cross-checks its own work on
+every card — score bounds (`[0, category_max]`), the derived-vs-parsed
+colour (should agree; see the original per-quality decision below on why
+this is a stronger check on full cards than compact ones), and the full
+card's own "Total Score: X / Y" text against the 4 parsed scores and the
+expected /98 denominator — logging a warning (not raising) if the
+newsletter's template or scoring rubric ever changes underneath us. As of
+this decision, running the new parser across the entire 166-email archive
+produces zero warnings.
+
+**Original decision (2026-09 and earlier, now superseded above):**
+pattern_quality_number, setup_number, risk_reward_number, context_number
+were None for compact cards; only bar colours were extracted, because the
+compact card format was believed not to encode a numeric score at all.
 
 ---
 

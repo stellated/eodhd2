@@ -266,21 +266,45 @@ code (ticker + ".US"), url, name, sector, win_probability (int),
 entry_zone_low, entry_zone_high, target, stop (all float),
 expected_reward (float, positive), expected_risk (float, NEGATIVE),
 holding_period_low, holding_period_high (int),
-pattern_quality_number, setup_number, risk_reward_number, context_number (float),
+pattern_quality_score, setup_score, risk_reward_score, context_score (float),
 pattern_quality_colour, setup_colour, risk_reward_colour, context_colour (int 1-4)
 
 ### Compact card fields extracted
-Same fields EXCEPT: name is None, and pattern/setup/rr/context NUMBER fields
-are None. Bar colours are derived from the visual bar fill background colour
-(not from a number's text colour). Order: PQ, Setup, R:R, Context.
+Same fields EXCEPT: name is None. Order: PQ, Setup, R:R, Context.
 Reward/risk/hold come from a single metrics paragraph.
 
-### Colour scheme
-Integer traffic-light scale (stored in _COLOUR_INT):
+The four `..._score` fields ARE populated for compact cards too (as of the
+2026-09-12 unification, see `doc/DESIGN_DECISIONS.md`) — but as an *estimate*
+reconstructed from the score bar's filled pixel height, not a printed number
+(the compact HTML never shows one). Precision is roughly +/-0.75-1.7 points
+depending on category — see `doc/LIMITATIONS.md`. Bar colours are read from
+the bar's fill background colour directly (not from a number's text colour,
+since there is no number to read the colour off of).
+
+### Score scale and colour scheme
+Each of the four qualities has its own maximum, confirmed against every
+captured email's own "Total Score: X / 98" (`CATEGORY_MAX` in tips_io.py):
+- pattern_quality: 40
+- setup: 20
+- risk_reward: 18
+- context: 20  (sums to 98)
+
+Colour is an integer traffic-light scale (stored in _COLOUR_INT):
 - 1 = green   (#22c55e)
 - 2 = yellow  (#eab308, #ca8a04)
 - 3 = orange  (#f97316)
 - 4 = red     (#ef4444)
+
+The colour bucket is a fixed function of `score / category_max`, identical
+across all four qualities and both card formats (verified against all
+13,040 score bars in the captured corpus, zero exceptions):
+- >= 0.75  -> green
+- 0.50-0.74 -> yellow
+- < 0.50   -> orange (red never observed on a per-tip quality score)
+
+The parser cross-checks the colour it read from the HTML against the colour
+this rule implies from the score, and logs a warning (does not raise) on any
+mismatch — see `_check_colour_consistency()`.
 
 ### expected_risk sign convention
 expected_risk is always stored as a NEGATIVE number (it is a loss).
