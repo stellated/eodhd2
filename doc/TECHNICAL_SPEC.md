@@ -199,7 +199,6 @@ connection for its lifetime.
 **_get_calendar(suffix) -> ExchangeCalendar**: cached via _calendar_cache dict
 **_session_open_ts(cal, session) -> int**: UTC epoch of market open
 **_n_sessions_before(cal, ref_date, n) -> date**: n=0 returns ref_date
-**_n_sessions_after(cal, ref_date, n) -> date**
 **_start_from_actual_dates(all_dates, end_date, n) -> date**:
   Counts back through dates actually returned by EODHD (not calendar sessions).
   This is the correct way to compute start for n_days — it counts half-days
@@ -241,19 +240,15 @@ connection for its lifetime.
 Parses StockDataAnalytics daily tip emails (.eml format) into two DataFrames
 and SQLite tables. No dependency on eodhd_io.py.
 
-### Email format history
-The email HTML structure changed between April 2026 and June 2026:
-- April 2026: ALL 20 tips use the "full-detail" card format
-- June 2026+: tips 1-3 use full-detail; tips 4-20 use "compact" format
-
-The parser detects which format each card uses and delegates accordingly.
-New email formats may require updating the parser.
-
-### Card format detection
-`_is_full_card(card_td) -> bool`:
-Full cards have a `<p style="font-size: 32px">` for win probability.
-Compact cards use a `<span style="font-size: 14px; font-weight: 800">` inside
-a coloured circle div. The 32px check is the discriminator.
+### Card format
+Every captured email (April 2026 through the current archive — no exceptions
+found across 166 emails) uses the same layout: tips 1-3 use the "full-detail"
+card format (printed number + score bar), tips 4-20 use the "compact" format
+(bar only, no printed number). `_parse_tip_card()` selects the branch purely
+positionally, via `if tip_n <= 3:` — there is no HTML-based format
+discriminator (e.g. checking for a specific font-size or element type). If a
+future email ever puts a different number of tips in the full-detail format,
+this positional check would need to change.
 
 ### Card anchor
 Each tip card is a `<td>` with `border-bottom: 1px solid` in its style,
@@ -307,11 +302,10 @@ this rule implies from the score, and logs a warning (does not raise) on any
 mismatch — see `_check_colour_consistency()`.
 
 ### expected_risk sign convention
-expected_risk is always stored as a NEGATIVE number (it is a loss).
-The full card HTML shows "-$0.52" and the code stores -0.52.
-The compact card HTML shows "-$0.18" and the code stores -0.18.
-Earlier versions of the code incorrectly stored it as positive for full cards.
-If you see positive expected_risk values, check the sign convention.
+expected_risk is always stored as a POSITIVE number (the absolute value of
+the loss). The full card HTML shows "-$0.52" and the code stores 0.52.
+The compact card HTML shows "-$0.18" and the code stores 0.18.
+This applies to both full and compact card formats.
 
 ### tip_n
 1-based position within the email (order of first appearance in HTML,
@@ -328,9 +322,6 @@ Both use INSERT OR REPLACE. Colour columns are INTEGER (nullable Int64 in pandas
 - `tips_exchange2sqlite(exchange_df, tips_df, db, exchange_tablename, tips_tablename)`
 - `tips_sqlite2pandas(db, exchange_tablename, tips_tablename, start, end)`
 
-### Sign Convention
-- `expected_risk` is stored as a **positive number** (representing the absolute risk amount).
-- This applies to both full and compact card formats.
 ---
 
 ## Dependencies

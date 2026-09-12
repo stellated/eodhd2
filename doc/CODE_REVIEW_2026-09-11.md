@@ -210,13 +210,16 @@ including the hypothesis-driven one), and `ruff check tests/` is clean.
 
 ---
 
-## 3. Documentation drift
+## 3. Documentation drift — RESOLVED 2026-09-13
 
 - `doc/TECHNICAL_SPEC.md` documents `Database.to_polars(tablename, **kwargs)` and
   `Database.to_csv(tablename, csv_path, **kwargs)` as existing methods. Neither exists in
   `src/eodhd_io.py` — only `to_pandas`, `from_csv`, `from_pandas`, `from_polars`, and
   `fetch` are implemented. Either the methods were never written or were removed; the spec
   should be corrected or the methods added.
+  **Resolution:** methods added (not the doc corrected) — both are thin wrappers around
+  `to_pandas()`, matching what the doc already described: `to_polars()` converts the result
+  via `pandas2polars()`; `to_csv()` writes it with pandas' own `to_csv()`.
 - `doc/TECHNICAL_SPEC.md` contradicts itself on the `expected_risk` sign convention within
   the same document: the body text and "Key test assertions" section both say values are
   stored **negative** (e.g. `expected_risk=-0.52`), then a trailing `### Sign Convention`
@@ -224,28 +227,48 @@ including the hypothesis-driven one), and `ruff check tests/` is clean.
   (`src/tips_io.py:254,332`) stores `abs(...)` — i.e. positive — matching only the second,
   contradicting section. Delete the stale negative-convention text (and the matching stale
   assertions higher up in the doc) so there's one source of truth.
+  **Resolution:** the "expected_risk sign convention" section now states positive (matching
+  the code), and the redundant duplicate "Sign Convention" section was deleted. The "Key
+  test assertions to know" list (under the already-stale test-suite section) still shows
+  negative example values — left as-is since that whole section describes a `--eml`/marker
+  test setup that doesn't match the current `tests/` at all; revisit together if that
+  section ever gets cleaned up.
 - `doc/HUMAN_CONTEXT.md` / `doc/TECHNICAL_SPEC.md` describe `_is_full_card()` as the format
   discriminator function; the actual code uses an inline `if tip_n <= 3:` check in
   `_parse_tip_card` — there is no `_is_full_card` function. Harmless but will confuse a
   future reader searching for it.
+  **Resolution:** `TECHNICAL_SPEC.md`'s "Card format detection" section rewritten to
+  describe the real `tip_n <= 3` check, and merged with "Email format history" — the old
+  claim that April 2026 emails used all-20-full-detail format was also factually wrong
+  (every one of the 166 captured emails uses 3 full + 17 compact, no exceptions; see
+  §1.1/§1.2's forensic analysis). `doc/HUMAN_CONTEXT.md` wasn't touched — not asked for
+  this round.
 
 ---
 
-## 4. Dead code / cruft worth cleaning up
+## 4. Dead code / cruft worth cleaning up — RESOLVED 2026-09-13
 
 - `src/eodhd_io.py:485-537` — a full commented-out previous implementation of
   `pandas2sqlite` (~50 lines) sits directly above the live one. Safe to delete now that
   it's superseded (git history preserves it if ever needed).
+  **Resolution:** deleted.
 - `_n_sessions_after()` (`src/eodhd_io.py:122`) and `_extract_bg_colour()`
   (`src/tips_io.py:69`) are defined but never called anywhere in the tracked codebase.
+  **Resolution:** `_n_sessions_after()` deleted (confirmed still unreferenced) —
+  `TECHNICAL_SPEC.md`'s private-helpers list updated to match. `_extract_bg_colour()` was
+  **not** removed: the 2026-09-12 score/height unification (§1.2's resolution) started
+  calling it from `_parse_tip_card()`'s compact-card branch, so it's no longer an orphan.
 - `pandas2polars()` (`src/eodhd_io.py:423-455`) has debug `print()` calls (including
   dumping the full head of every DataFrame with `display.max_columns=None`) left in on
   every call — this is library code called from `Database.to_pandas()`'s hot path via
   callers, so it will spam stdout in any script or notebook that uses it. Should use
   `logging.debug(...)` (already set up elsewhere in the file) or be removed.
+  **Resolution:** removed (along with one adjacent stray commented-out line of dead code
+  in the same function).
 - `is_connection_closed()` (`src/eodhd_io.py:810-820`) carries a leftover note-to-self in
   its docstring ("I think I've dispensed with this crap") — fine to leave functionally but
   worth tidying since it's shipped as part of the module docstring surface.
+  **Resolution:** docstring rewritten to a normal description.
 - Untracked backup/scratch files living inside `src/` rather than `scripts/`:
   `src/tips_io.prior.py`, `src/20260806.eodhd_io.py`, `src/20260806.tips_io.py`,
   `src/test2.py`, `src/check_halfday.py`. None of these are tracked by git, so they're not
@@ -254,25 +277,37 @@ including the hypothesis-driven one), and `ruff check tests/` is clean.
   `import` the wrong version or lose track of which file is canonical — worth moving or
   deleting now that they've served their purpose (especially `tips_io.prior.py`, which as
   noted in §1.1 actually has the *correct* colour mapping).
+  **Resolution:** all five deleted (re-confirmed unreferenced anywhere first).
 
 ---
 
-## 5. Security / secrets hygiene
+## 5. Security / secrets hygiene — RESOLVED 2026-09-13 (except credential rotation)
 
 - **There is no `.gitignore` anywhere in the repository.** `git status` currently shows
   `.env`, `.idea/`, `.DS_Store` files, `test.db`, `.venv/`, `.hypothesis/`, `.pytest_cache/`,
   and the entire `scripts/data/` tree (hundreds of `.eml`/`.html`/`.csv` files) as untracked
   — all one `git add -A` away from being committed. `tests/data/.DS_Store` is in fact
   already staged (`git status` shows `A tests/data/.DS_Store`).
+  **Resolution:** `.gitignore` added 2026-09-12 (`.DS_Store` only initially), then expanded
+  2026-09-13 to `.env`, `*.db`, `__pycache__/`, `.venv/`, `.idea/`, `.pytest_cache/`,
+  `.hypothesis/`, plus a single directory-level `scripts/data/` rule (covers all current and
+  future personal data files with no ongoing maintenance, rather than per-extension/per-date
+  patterns). `tests/data/.DS_Store` itself was removed from tracking in a separate commit.
+  Note: `scripts/data/csv/2026-04-08.NASDAQ.{exchange,tips}.csv` were already tracked
+  (committed by Ian before this rule existed) — the new `.gitignore` rule doesn't retroactively
+  untrack them; that would need an explicit `git rm --cached` if ever wanted.
 - **`.env` (repo root, untracked but unprotected) contains a live IMAP email password and a
   live EODHD API token in plaintext.** It happens not to be tracked by git today, but
   without a `.gitignore` entry that's incidental rather than enforced. Recommend adding a
   `.gitignore` with at least `.env`, `*.db`, `.DS_Store`, `__pycache__/`, `.venv/`, `.idea/`,
   `.pytest_cache/`, `.hypothesis/` — and rotating the IMAP password and EODHD token since
   they've now been read in plaintext during this review.
+  **Resolution:** `.gitignore` covers `.env` now (see above). Credential rotation
+  acknowledged by Ian, added to his own to-do list — not something to action from here.
 - `src/email_downloader.py:139` does `print(USERNAME, PASSWORD)` right before running,
   echoing the IMAP password in cleartext to stdout (and to any terminal scrollback/log
   capture). Should be removed.
+  **Resolution:** removed.
 - `src/email_downloader.py`'s `__main__` block is currently broken and would crash
   immediately if run: `TARGET_FOLDER = "../emails"` is assigned as a plain `str`, then
   `TARGET_FOLDER.is_dir()` is called on it (line 131) — `AttributeError`, since `str` has no
@@ -281,25 +316,44 @@ including the hypothesis-driven one), and `ruff check tests/` is clean.
   `EMAIL_FOLDER` correctly) appears to be the actual, working entry point — `email_
   downloader.py`'s own `__main__` looks like leftover/never-fixed scaffolding rather than a
   runnable script.
+  **Resolution:** fixed, and one more bug found in the process — the `__main__` block also
+  read `os.environ["username"]`/`["password"]`, but the actual `.env` keys are
+  `imap_username`/`imap_password` (matching what `scripts/ian_test.py` correctly uses), so it
+  would have raised `KeyError` before ever reaching the `TARGET_FOLDER` bug. Also fixed: a
+  variable-name typo (`target_folder` lowercase assigned inside the `sirius` branch, while
+  the rest of the code reads `TARGET_FOLDER` uppercase, so the sirius branch's assignment was
+  silently discarded even when reached). `TARGET_FOLDER` is now a `Path` throughout, `Path`
+  is imported, and `.mkdir(parents=True)` is used for the not-yet-existing case.
 
 ---
 
-## 6. Minor / style notes
+## 6. Minor / style notes — RESOLVED 2026-09-13 (except §6.2, left as-is by design)
 
 - `readme.md` line 9 ends with a stray trailing `"` (`/tests -> automated testing (needs
   work)"`) — looks like a copy/paste artifact from formatted markdown.
+  **Resolution:** the "(needs work)" note-to-self removed (it's no longer true — the test
+  suite is green as of §2's resolution) and the stray trailing `"` cleaned up in the same
+  edit.
 - `Database.__init__` creates the parent directory with `self.db_path.parent.mkdir()`
   (`src/eodhd_io.py:856`) without `parents=True`; if the grandparent directory is also
   missing this raises `FileNotFoundError` instead of creating the full path.
+  **Resolution:** left as-is, deliberately. Ian's reasoning: with the grandparent directory
+  already present (true for this project's actual usage — e.g. `scripts/` is tracked, only
+  `scripts/data/` might be missing), the existing single-level `mkdir()` is sufficient on a
+  clean checkout, and this was confirmed correct rather than changed speculatively.
 - `_eodhd_fetch_csv` calls `resp.raise_for_status()` *outside* the `@retry`-wrapped
   `_fetch_with_retry`, so the tenacity retry only covers transport-level exceptions (DNS/
   connection errors), not HTTP 4xx/5xx responses from EODHD. This may be intentional (you
   don't want to retry a 401), but it's worth a one-line comment saying so, since at first
   glance it looks like the retry should cover HTTP errors too.
+  **Resolution:** comment added at `_eodhd_fetch_csv` explaining exactly this.
 - `scripts/ian_test.py` and `scripts/data/test.db` are working scratch files (per the
   readme, this is expected/fine) but `scripts/data/test.db` and the large `eml/`/`html/`/
   `csv/` trees under `scripts/data/` are a lot of personal data (stock-tip emails) sitting
   untracked in a git working directory with no `.gitignore` — see §5.
+  **Resolution:** covered by §5's `scripts/data/` gitignore rule. Longer-term, Ian's plan is
+  to move this data out of the repo entirely rather than manage it via git at all; the
+  directory-level ignore is a zero-maintenance stepping stone until then.
 
 ---
 

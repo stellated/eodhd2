@@ -3,6 +3,7 @@ import email
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 from email.header import decode_header
 
@@ -110,19 +111,18 @@ if __name__ == '__main__':
     # Configuration
     load_dotenv()
     IMAP_SERVER = os.environ["imap_server"]
-    USERNAME = os.environ["username"]
-    PASSWORD = os.environ["password"]
+    USERNAME = os.environ["imap_username"]
+    PASSWORD = os.environ["imap_password"]
 
     '''
     Original plan was to pull emails from gmail, but that just gets errors
     So instead gmail forwards to ian@atkinson.id.au and Ventra's Axigen puts them into a subfolder
     '''
 
-    TARGET_FOLDER = "../emails"  # default
-    if os.getenv("system"):
-        if os.getenv("system") == "sirius":
-            target_folder = Path(os.getenv("DATA_DIR")) / 'emails'
-    else:
+    TARGET_FOLDER = Path("../emails")  # default
+    if os.getenv("system") == "sirius":
+        TARGET_FOLDER = Path(os.getenv("DATA_DIR")) / 'emails'
+    elif not os.getenv("system"):
         print("os.getenv('system') does not exist")
 
     SENDER_EMAIL = "reports@stockdataanalytics.com"
@@ -132,9 +132,7 @@ if __name__ == '__main__':
         print(f"saving emails to: {TARGET_FOLDER}")
     else:
         print(f"saving emails to: {TARGET_FOLDER}, (which doesn't exist, creating now)")
-        TARGET_FOLDER.mkdir()
-
+        TARGET_FOLDER.mkdir(parents=True)
 
     # Run the script
-    print(USERNAME, PASSWORD)
     download_emails(IMAP_SERVER, USERNAME, PASSWORD, TARGET_FOLDER, SENDER_EMAIL)

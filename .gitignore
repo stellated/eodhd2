@@ -1,1 +1,14 @@
 .DS_Store
+.env
+*.db
+__pycache__/
+.venv/
+.idea/
+.pytest_cache/
+.hypothesis/
+
+# Personal data captured for local inspection, not project source.
+# One directory-level rule covers every current and future file in the
+# tree (eml/html/csv, any new dated files) with zero ongoing maintenance --
+# no need to add a new pattern each time a new file type or date shows up.
+scripts/data/

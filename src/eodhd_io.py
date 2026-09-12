@@ -119,15 +119,6 @@ def _n_sessions_before(cal: ec.ExchangeCalendar, ref_date: date, n: int) -> date
     return lookback[-(n + 1)].date()
 
 
-def _n_sessions_after(cal: ec.ExchangeCalendar, ref_date: date, n: int) -> date:
-    """Return the session date that is n trading days after ref_date (inclusive)."""
-    ref_ts = pd.Timestamp(ref_date)
-    lookahead = cal.sessions_in_range(ref_ts, ref_ts + pd.Timedelta(days=n * 3))
-    if len(lookahead) < n + 1:
-        return lookahead[-1].date()
-    return lookahead[n].date()
-
-
 # ---------------------------------------------------------------------------
 # SQLite DDL
 # ---------------------------------------------------------------------------
@@ -426,10 +417,6 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
     date/local_date -> pl.Date
     local_time -> pl.Utf8 (if present)
     """
-    print('pandas2polars(), pandas input:')
-    with pd.option_context('display.max_columns', None):
-        print(pdf.head())
-    # if "date" or "local_date" in pdf_columns:
     if any(col in pdf.columns for col in ['date', 'local_date']):
         # "date" implies daily data,
         # "local_date" implies intraday data with datetime primary key and a local_date column
@@ -449,9 +436,6 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
         ])
     else:
         df = pl.from_pandas(pdf)
-    print('pandas2polars rval:')
-    with pl.Config(tbl_cols=-1, tbl_width_chars=-1):
-        print(df.head(2))
     return df
 
 
@@ -481,61 +465,6 @@ def polars2pandas(df: pl.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # 4. pandas2sqlite
 # ---------------------------------------------------------------------------
-
-# def pandas2sqlite(
-#     pdf: pd.DataFrame,
-#     db: Union[sqlite3.Connection, str, pathlib.Path],
-#     tablename: str,
-# ) -> None:
-#     """Write a tidy pandas DataFrame (daily or intraday) to SQLite.
-#     Creates the table if it doesn't exist.
-#     Uses INSERT OR REPLACE so the operation is idempotent.
-#     local_time, if present, is stored as an extra TEXT column added via ALTER TABLE when first encountered.
-#     """
-#     is_daily = "date" in pdf.columns
-#     has_lt = "local_time" in pdf.columns
-#     ddl = _DDL_DAILY if is_daily else _DDL_INTRADAY
-#     insert = _INSERT_DAILY if is_daily else _INSERT_INTRADAY
-#     _own = not isinstance(db, sqlite3.Connection)
-#     conn = sqlite3.connect(db) if _own else db
-#     try:
-#         conn.execute(ddl.format(tablename=tablename))
-#         # Add local_time column if needed and not already present
-#         if has_lt and not is_daily:
-#             existing = {row[1] for row in conn.execute(f"PRAGMA table_info({tablename})")}
-#             if "local_time" not in existing:
-#                 conn.execute(f"ALTER TABLE {tablename} ADD COLUMN local_time TEXT")
-#         rows = []
-#         for row in pdf.itertuples(index=False):
-#             d = dict(row._asdict())
-#             d["datetime"] = row.datetime.strftime("%Y-%m-%d %H:%M:%S")
-#             if is_daily:
-#                 d["date"] = (
-#                     row.date.strftime("%Y-%m-%d") if isinstance(row.date, date) else str(row.date)
-#                 )
-#             else:
-#                 d["local_date"] = (
-#                     row.local_date.strftime("%Y-%m-%d")
-#                     if isinstance(row.local_date, date)
-#                     else str(row.local_date)
-#                 )
-#             d["vo"] = int(row.vo)
-#             rows.append(d)
-#         if has_lt and not is_daily:
-#             insert_lt = (
-#                 insert.rstrip(";")
-#                 .replace("op, hi, lo, cl, vo)", "op, hi, lo, cl, vo, local_time)")
-#                 .replace(":op, :hi, :lo, :cl, :vo);", ":op, :hi, :lo, :cl, :vo, :local_time);")
-#                 + ";"
-#             )
-#             conn.executemany(insert_lt.format(tablename=tablename), rows)
-#         else:
-#             conn.executemany(insert.format(tablename=tablename), rows)
-#         conn.commit()
-#     finally:
-#         if _own:
-#             conn.close()
-
 
 def pandas2sqlite(
     pdf: pd.DataFrame,
@@ -654,6 +583,11 @@ EODHD_BASE = "https://eodhd.com/api"
 
 def _eodhd_fetch_csv(url: str) -> pd.DataFrame:
     """GET a URL that returns CSV and parse it into a DataFrame."""
+    # raise_for_status() is deliberately outside _fetch_with_retry's @retry:
+    # tenacity only retries the requests.get() call, so retries cover
+    # transient transport failures (timeouts, connection resets), not HTTP
+    # error responses (4xx/5xx) -- a 401/404 fails fast instead of retrying
+    # 3 times against a request that will never succeed.
     resp = _fetch_with_retry(url, timeout=30)
     resp.raise_for_status()
     return pd.read_csv(io.StringIO(resp.text))
@@ -808,9 +742,9 @@ def tips(
 # ---------------------------------------------------------------------------
 
 def is_connection_closed(conn):
-    # for debugging, tells us if an sqlite.connection is open of closed
-    # now also used in db.__enter__() to open a connection if needed at the start of a with clause
-    # I think I've dispensed with this crap
+    """Return True if an sqlite3.Connection is closed. Used in
+    Database.__enter__() to reopen a connection if needed at the start of
+    a with-block."""
     try:
         conn.execute("SELECT 1")
         return False  # Connection is open
@@ -1076,3 +1010,13 @@ class Database:
             pdf["local_date"] = pd.to_datetime(pdf["local_date"]).dt.date
 
         return pdf
+
+    def to_polars(self, tablename: str, **kwargs) -> pl.DataFrame:
+        """Return table contents as a polars DataFrame. Thin wrapper:
+        delegates to to_pandas() and converts via pandas2polars()."""
+        return pandas2polars(self.to_pandas(tablename, **kwargs))
+
+    def to_csv(self, tablename: str, csv_path: Union[str, pathlib.Path], **kwargs) -> None:
+        """Write table contents to a CSV file. Thin wrapper: delegates to
+        to_pandas() and writes the result with pandas' own to_csv()."""
+        self.to_pandas(tablename, **kwargs).to_csv(csv_path, index=False)

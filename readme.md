@@ -6,7 +6,7 @@ The primary purpose of this database is to store `n1` days of data before and `n
 /src -> the code\
 /doc -> project documentation\
 /scripts -> ian's scripting playpen\
-/tests -> automated testing (needs work)"
+/tests -> automated testing
 
 
 
