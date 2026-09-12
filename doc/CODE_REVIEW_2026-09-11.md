@@ -110,10 +110,10 @@ struct already documented everywhere else).
 
 ---
 
-## 2. Test suite is not currently runnable
+## 2. Test suite is not currently runnable — RESOLVED 2026-09-12
 
-Running `pytest tests/ -q` today gives **19 failed, 10 passed, 1 error**. None of this is
-pre-existing/flaky — every failure has a concrete cause:
+Running `pytest tests/ -q` at the time of this review gave **19 failed, 10 passed, 1
+error**. None of that was pre-existing/flaky — every failure had a concrete cause:
 
 - **`tests/test_tips_io.py` has no import statements at all.** It uses `parse_tip_email`,
   `Path`, `BeautifulSoup`, `_get_html`, `_parse_tip_card`, `_hex_to_int`, `logging`,
@@ -162,13 +162,51 @@ pre-existing/flaky — every failure has a concrete cause:
   "prior" and current test files in the same `tests/` directory means `pytest` collects and
   runs both, doubling noise for no benefit.
 
-**Net effect:** the test suite currently gives no real signal. It would not have caught
-either of the correctness bugs in §1. Recommend triaging in this order: (a) delete or
-archive `test_eodhd_io_prior.py`, (b) add the missing imports to `test_tips_io.py` and
-either commit real fixture `.eml` files under `tests/data/eml/` with the exact names the
-tests expect, or fix the paths to point at `scripts/data/eml/`, (c) fix the two decorator
-bugs in `test_eodhd_io.py`, (d) confirm the `hypothesis.extra.pandas.data_frames` call
-against the currently pinned `hypothesis` version.
+**Net effect at the time:** the test suite gave no real signal and would not have caught
+either of the correctness bugs in §1.
+
+**Resolution (2026-09-12), in the order recommended above:**
+- Deleted `tests/test_eodhd_io_prior.py` (confirmed unreferenced anywhere and untracked).
+- Fixed `test_tips_io.py`'s missing imports, and copied two real captured emails (2026-04-08
+  and 2026-06-10, both NASDAQ) into `tests/data/eml/` under the filenames the tests already
+  expected — chosen so tip 1 is STRO, matching the module's own worked reference.
+- Fixed the two `mock.patch` decorator/parameter-order bugs in `test_fetch_daily` /
+  `test_fetch_daily_empty` (swapped the parameter names to match decorator order).
+  `test_fetch_daily_empty` additionally needed its assertion corrected: an empty CSV
+  response causes `csv2pandas_daily` to raise `ValueError` (no rows remain after clipping),
+  not return an empty DataFrame — the original test's expectation didn't match the code's
+  actual (intentional) behaviour.
+- Removed the vestigial `test_min_date` (no assertions, not testing anything) and reattached
+  `@given(...)` to `test_pandas_polars_roundtrip_hypothesis`; added `dtype=` to every
+  `column()` (required by the installed `hypothesis` version); discovered and fixed a second,
+  independent bug in the same test — `rows=st.integers(...)` was never valid usage of
+  `data_frames()` (`rows` expects a strategy producing whole row-tuples, not a row count;
+  row count is controlled via `index=range_indexes(...)`); and fixed a resulting dtype
+  mismatch where the "code" column's hypothesis-generated `dtype=object` didn't match what
+  `polars2pandas()` actually returns under the installed pandas 3.0 (which defaults string
+  columns to its new `str`/StringDtype backend, not `object`).
+- Along the way, found and fixed a real, pre-existing bug in `test_tips_io.py`'s two
+  `_parse_tip_card` unit tests: they located a card via
+  `soup.find("td", style=lambda x: "border-bottom" in x)`, which also matches unrelated
+  section-divider `<td>`s elsewhere in the email, not just tip cards — so `cards[4]` didn't
+  reliably mean "the 5th tip card." Replaced with a helper that walks up from each ticker
+  link, mirroring `parse_tip_email`'s own (private) card-finding logic.
+- Found and fixed a structural gap surfaced by finally importing `tips_io.py` under pytest
+  for the first time: it does `from eodhd_io import ...` (a bare, non-package import) which
+  only resolves if `src/` itself is on `sys.path` — true when run as a script from inside
+  `src/`, but not when pytest imports it as `src.tips_io`. Added `tests/conftest.py` to put
+  `src/` on `sys.path` for test collection.
+- `test_tips_roundtrip` needed loosening from `exchange_df.equals(exchange_df2)` to
+  `pd.testing.assert_frame_equal(..., check_dtype=False)`: `parse_tip_email()`'s exchange_df
+  has plain `int64` colour columns (never coerced to nullable) while `tips_sqlite2pandas()`
+  defensively restores them as nullable `Int64` — values match exactly, only the dtype
+  representation differs.
+- Updated `test_parse_tip_email_june_2026` and `test_parse_tip_card_compact` to assert the
+  new unified `..._score` behaviour (populated and in-bounds for compact cards) instead of
+  the old `.isna()`/`is None` expectation, per the §1.2 resolution.
+
+All 18 tests in `tests/` pass as of this update (confirmed stable across repeated runs,
+including the hypothesis-driven one), and `ruff check tests/` is clean.
 
 ---
 

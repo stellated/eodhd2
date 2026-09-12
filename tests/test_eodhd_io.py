@@ -1,22 +1,23 @@
+from datetime import date
+from unittest import mock
+
+import pandas as pd
 import pytest
 import requests
-from pathlib import Path
-import pandas as pd
-from datetime import date, datetime
-from unittest import mock
-from hypothesis import given, strategies as st, settings
-from hypothesis.extra.pandas import data_frames, column
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from hypothesis.extra.pandas import column, data_frames, range_indexes
 
 from src.eodhd_io import (
+    Database,
+    add_local_time,
     csv2pandas_daily,
     csv2pandas_intraday,
+    fetch_daily,
     pandas2polars,
     polars2pandas,
-    add_local_time,
-    Database,
-    fetch_daily,
-    fetch_intraday,
 )
+
 
 # --- Fixtures for Temporary CSV Files ---
 @pytest.fixture
@@ -166,10 +167,13 @@ def test_database_to_pandas_missing_token(tmp_path):
 # --- Tests for fetch_daily (mocked) ---
 @mock.patch("src.eodhd_io._fetch_with_retry")
 @mock.patch("src.eodhd_io._get_calendar")
-def test_fetch_daily(mock_fetch, mock_get_calendar):
+def test_fetch_daily(mock_get_calendar, mock_fetch):
     """Test fetch_daily with a mocked response."""
     mock_response = mock.MagicMock()
-    mock_response.text = "Date,Open,High,Low,Close,Adjusted_close,Volume\n2022-01-01,100,101,99,100.5,100.3,1000000"
+    mock_response.text = (
+        "Date,Open,High,Low,Close,Adjusted_close,Volume\n"
+        "2022-01-01,100,101,99,100.5,100.3,1000000"
+    )
     mock_response.raise_for_status = lambda: None
     mock_fetch.return_value = mock_response
 
@@ -189,8 +193,12 @@ def test_fetch_daily(mock_fetch, mock_get_calendar):
 
 @mock.patch("src.eodhd_io._fetch_with_retry")
 @mock.patch("src.eodhd_io._get_calendar")
-def test_fetch_daily_empty(mock_fetch, mock_get_calendar):
-    """Test fetch_daily with an empty response."""
+def test_fetch_daily_empty(mock_get_calendar, mock_fetch):
+    """Test fetch_daily with an empty response.
+    csv2pandas_daily raises ValueError when no rows remain (see its
+    "raises if all clipped" behaviour) -- an empty CSV has nothing to
+    clip either, so it hits the same raise.
+    """
     mock_response = mock.MagicMock()
     mock_response.text = "Date,Open,High,Low,Close,Adjusted_close,Volume\n"
     mock_response.raise_for_status = lambda: None
@@ -200,8 +208,8 @@ def test_fetch_daily_empty(mock_fetch, mock_get_calendar):
     mock_cal.first_session.date.return_value = date(2020, 1, 1)
     mock_get_calendar.return_value = mock_cal
 
-    pdf = fetch_daily("AAPL.US", "fake_token")
-    assert len(pdf) == 0
+    with pytest.raises(ValueError, match="no rows remain"):
+        fetch_daily("AAPL.US", "fake_token")
 
 @mock.patch("src.eodhd_io._fetch_with_retry")
 def test_fetch_daily_error(mock_fetch):
@@ -214,29 +222,43 @@ def test_fetch_daily_error(mock_fetch):
         fetch_daily("AAPL.US", "fake_token")
 
 # --- Hypothesis Test ---
+# CHANGED: the @given(...) strategy below used to be attached to a
+# vestigial test_min_date(df) (no assertions, just a print) that sat
+# between this comment and test_pandas_polars_roundtrip_hypothesis --
+# leaving the real property test below with only @settings and no
+# @given, so pytest treated `df` as a missing fixture and errored at
+# collection. test_min_date has been removed (it wasn't testing
+# anything) and @given now decorates the test it was clearly meant for.
+# Also added dtype= to every column: newer hypothesis requires an
+# explicit dtype on every column when data_frames() is combined with an
+# explicit row-count strategy. And `rows=st.integers(...)` was always
+# wrong -- `rows` in data_frames() expects a strategy producing whole row
+# tuples, not a row count; row count is controlled via `index=`.
+_nonneg_int = st.integers(min_value=0, max_value=2**31 - 1)
+_nonneg_float = st.floats(min_value=0, allow_nan=False, allow_infinity=False)
+
+
+@settings(max_examples=50)
 @given(
     df=data_frames(
         columns=[
-            column("code", elements=st.text(min_size=1, max_size=10)),
-            column("timestamp", elements=st.integers(min_value=0)),
-            column("datetime", elements=st.datetimes()),
-            column("date", elements=st.dates()),
-            column("op", elements=st.floats(min_value=0)),
-            column("hi", elements=st.floats(min_value=0)),
-            column("lo", elements=st.floats(min_value=0)),
-            column("cl", elements=st.floats(min_value=0)),
-            column("ac", elements=st.floats(min_value=0)),
-            column("vo", elements=st.integers(min_value=0)),
+            column("code", dtype=str, elements=st.text(min_size=1, max_size=10)),
+            column("timestamp", dtype="int64", elements=_nonneg_int),
+            column("datetime", dtype=object, elements=st.datetimes()),
+            column("date", dtype=object, elements=st.dates()),
+            column("op", dtype="float64", elements=_nonneg_float),
+            column("hi", dtype="float64", elements=_nonneg_float),
+            column("lo", dtype="float64", elements=_nonneg_float),
+            column("cl", dtype="float64", elements=_nonneg_float),
+            column("ac", dtype="float64", elements=_nonneg_float),
+            column("vo", dtype="int64", elements=_nonneg_int),
         ],
-        rows=st.integers(min_value=1, max_value=100)
+        index=range_indexes(min_size=1, max_size=100),
     )
 )
-def test_min_date(df):
-    print("min data in given df for hypothesis:", df['date'].min())
-@settings(max_examples=50)
 def test_pandas_polars_roundtrip_hypothesis(df):
     """Test round-trip conversion with hypothesis."""
-    df["code"] = df["code"].astype("object")
+    df["code"] = df["code"].astype(str)
     df["timestamp"] = df["timestamp"].astype("int64")
     df["datetime"] = pd.to_datetime(df["datetime"]).astype("datetime64[us]")
     df["date"] = pd.to_datetime(df["date"]).dt.date
