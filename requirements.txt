@@ -10,3 +10,4 @@ pytest-mock
 responses
 hypothesis
 tenacity
+ruff
