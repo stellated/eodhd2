@@ -3,6 +3,7 @@ polars
 pyarrow
 exchange_calendars
 requests
+python-dotenv
 beautifulsoup4
 lxml
 pytest
