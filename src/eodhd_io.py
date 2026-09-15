@@ -2,8 +2,10 @@
 CSV <-> pandas DataFrame <-> polars DataFrame <-> SQLite
 Also provides:
 - Network fetch functions that call EODHD's REST API directly
-- Database class: a caching SQLite wrapper that fetches from EODHD on demand when requested data is not already stored locally
-- tips(): populate a table with n1 days before / n2 days after each tip date, for backtesting a tipping newsletter
+- Database class: a caching SQLite wrapper that fetches from EODHD on demand when
+  requested data is not already stored locally
+- tips(): populate a table with n1 days before / n2 days after each tip date, for
+  backtesting a tipping newsletter
 
 Column contract (daily)
 -----------------------
@@ -38,9 +40,7 @@ from __future__ import annotations
 import io
 import logging
 import pathlib
-import re
 import sqlite3
-import warnings
 from datetime import date, datetime, time, timedelta
 from typing import Optional, Union
 from zoneinfo import ZoneInfo
@@ -160,7 +160,9 @@ VALUES (:code, :timestamp, :datetime, :date, :op, :hi, :lo, :cl, :ac, :vo);
 """
 
 _INSERT_INTRADAY = """
-INSERT OR REPLACE INTO {tablename} (code, timestamp, datetime, local_date, local_time, op, hi, lo, cl, vo)
+INSERT OR REPLACE INTO {tablename} (
+    code, timestamp, datetime, local_date, local_time, op, hi, lo, cl, vo
+)
 VALUES (:code, :timestamp, :datetime, :local_date, :op, :hi, :lo, :cl, :vo);
 """
 
@@ -227,8 +229,10 @@ def _fetch_with_retry(url: str, **kwargs) -> requests.Response:
 
 def csv2pandas_daily(code: str, csv_path: pathlib.Path) -> pd.DataFrame:
     """Read an EODHD daily CSV and return a tidy pandas DataFrame.
-    - Derives timestamp from the official UTC market open for each session (via exchange_calendars).
-    - Pads missing trading days with zero volume and prices carried forward from the most recent real bar.
+    - Derives timestamp from the official UTC market open for each session
+      (via exchange_calendars).
+    - Pads missing trading days with zero volume and prices carried forward
+      from the most recent real bar.
     - Clips rows earlier than the calendar's coverage start and warns.
     Columns: code, timestamp, datetime, date, op, hi, lo, cl, ac, vo
     """
@@ -299,7 +303,8 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
     """Read an EODHD intraday CSV and return a tidy pandas DataFrame.
     - Drops Gmtoffset column (always zero; UTC is authoritative).
     - Derives local_date from timestamp + exchange timezone.
-    - Pads missing bars between first and last bar of each day with zero volume and prices carried forward from the most recent real bar.
+    - Pads missing bars between first and last bar of each day with zero volume
+      and prices carried forward from the most recent real bar.
     Columns: code, timestamp, datetime, local_date, op, hi, lo, cl, vo
     """
     suffix = _suffix(code)
@@ -315,7 +320,9 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
 
     # Check Gmtoffset
     if "Gmtoffset" in raw.columns and not (raw["Gmtoffset"] == 0).all():
-        logging.warning("Non-zero Gmtoffset detected in EODHD intraday data. Expected UTC (Gmtoffset=0).")
+        logging.warning(
+            "Non-zero Gmtoffset detected in EODHD intraday data. Expected UTC (Gmtoffset=0)."
+        )
 
     raw = _parse_ohlcv(raw, has_ac=False)
     raw["timestamp"] = raw["Timestamp"].astype("int64")
@@ -358,7 +365,10 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
 
     result = pd.concat(padded_frames, ignore_index=True)
     result["code"] = code
-    cols = ["code", "timestamp", "datetime", "local_date", "local_time", "op", "hi", "lo", "cl", "vo"]
+    cols = [
+        "code", "timestamp", "datetime", "local_date", "local_time",
+        "op", "hi", "lo", "cl", "vo",
+    ]
     rval = result[cols].reset_index(drop=True)
     # code timestamp datetime local_date local_time op hi lo cl vo
     # AAPL.US, <big int>, yyyy-mm-dd hh:mm:ss, yyyy-mm-dd, hh:mm:ss, ...
@@ -517,7 +527,10 @@ def pandas2sqlite(
         if is_daily:
             cols = ["code", "timestamp", "datetime", "date", "op", "hi", "lo", "cl", "ac", "vo"]
         elif has_lt:
-            cols = ["code", "timestamp", "datetime", "local_date", "local_time", "op", "hi", "lo", "cl", "vo"]
+            cols = [
+                "code", "timestamp", "datetime", "local_date", "local_time",
+                "op", "hi", "lo", "cl", "vo",
+            ]
         else:
             cols = ["code", "timestamp", "datetime", "local_date", "op", "hi", "lo", "cl", "vo"]
 
@@ -684,7 +697,9 @@ def tips(
 
     for code, tip_date in tip_list:
         if (code, tip_date) in fetched_ranges:
-            logging.warning(f"Overlapping ranges detected for {code} on {tip_date}. Last fetch wins.")
+            logging.warning(
+                f"Overlapping ranges detected for {code} on {tip_date}. Last fetch wins."
+            )
         else:
             fetched_ranges.add((code, tip_date))
 
@@ -700,15 +715,21 @@ def tips(
         cal_end = tip_date + timedelta(days=n2 * 2 + 5)
 
         if _is_intraday(interval):
-            from_ts = int(datetime(cal_start.year, cal_start.month, cal_start.day).timestamp()) - 86400
-            to_ts = int(datetime(cal_end.year, cal_end.month, cal_end.day, 23, 59, 59).timestamp()) + 86400
+            from_ts = int(
+                datetime(cal_start.year, cal_start.month, cal_start.day).timestamp()
+            ) - 86400
+            to_ts = int(
+                datetime(cal_end.year, cal_end.month, cal_end.day, 23, 59, 59).timestamp()
+            ) + 86400
             pdf = fetch_intraday(code, db.api_token, interval, from_ts=from_ts, to_ts=to_ts)
             # Trim: keep cal_start through the nth actual trading date after tip
             actual_after = sorted(d for d in pdf["local_date"].unique() if d >= tip_date)
             end_date = actual_after[n2] if len(actual_after) > n2 else (
                 actual_after[-1] if actual_after else cal_end
             )
-            pdf = pdf[(pdf["local_date"] >= cal_start) & (pdf["local_date"] <= end_date)].reset_index(drop=True)
+            pdf = pdf[
+                (pdf["local_date"] >= cal_start) & (pdf["local_date"] <= end_date)
+            ].reset_index(drop=True)
 
             # Log warning if fetch window mismatch
             if len(actual_after) < n2 + 1:
@@ -970,7 +991,9 @@ class Database:
                             fetch_end.year, fetch_end.month, fetch_end.day, 23, 59, 59
                         ).timestamp()
                     ) + 86400
-                    pdf = fetch_intraday(code, self.api_token, interval, from_ts=from_ts, to_ts=to_ts)
+                    pdf = fetch_intraday(
+                        code, self.api_token, interval, from_ts=from_ts, to_ts=to_ts
+                    )
                 else:
                     pdf = fetch_daily(
                         code, self.api_token, from_date=start, to_date=fetch_end
@@ -983,7 +1006,11 @@ class Database:
             _, cached_max = self._date_range_in_table(tablename, code, is_daily)
             end = cached_max
             start = _start_from_actual_dates(
-                [row[0] for row in self.conn.execute(f"SELECT {date_col} FROM {tablename} WHERE code = ?", (code,))],
+                [
+                    row[0] for row in self.conn.execute(
+                        f"SELECT {date_col} FROM {tablename} WHERE code = ?", (code,)
+                    )
+                ],
                 end,
                 n,
             )

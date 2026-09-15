@@ -30,18 +30,19 @@ and imports Database from this project. tips_io.py has no dependency on eodhd_io
 """
 from __future__ import annotations
 
+import email as _email_module
 import logging
-import re
 import pathlib
+import re
 import sqlite3
 from datetime import date, datetime
+from email import policy as _email_policy
 from typing import Optional, Union
 
-import email as _email_module
-from email import policy as _email_policy
-from bs4 import BeautifulSoup
 import pandas as pd
-from eodhd_io import Database, is_connection_closed
+from bs4 import BeautifulSoup
+
+from eodhd_io import Database
 
 # Set up logging
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -376,7 +377,8 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                     result["expected_reward"] = float(entry) if entry else None
                 elif "EXP. RISK" in label.upper():
                     entry = re.sub(r'[^\d.]', '', txt)
-                    result["expected_risk"] = abs(float(entry)) if entry else None  # Store as positive
+                    # Store as positive
+                    result["expected_risk"] = abs(float(entry)) if entry else None
                 elif "HOLD PERIOD" in label.upper():
                     m = re.match(r'(\d+)-(\d+)', txt)
                     if m:

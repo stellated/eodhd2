@@ -1,11 +1,13 @@
-import imaplib
 import email
+import imaplib
 import os
 import re
 from datetime import datetime
-from pathlib import Path
-from dotenv import load_dotenv
 from email.header import decode_header
+from pathlib import Path
+
+from dotenv import load_dotenv
+
 
 def trim_dir(folder):
     # just to make the prints a bit more readable
