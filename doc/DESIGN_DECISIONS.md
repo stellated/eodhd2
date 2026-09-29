@@ -198,8 +198,43 @@ markets open).
 n1 days before = context leading up to the tip. n2 days after = measuring
 outcomes. Day 0 is tip_date itself.
 
-**Implication:** n1=3, n2=10 gives 14 trading days of data total (3 before,
-tip day, 10 after). This is the intended use for backtesting.
+**Implication:** n1=20, n2=20 gives 41 trading days of data total (20 before,
+tip day, 20 after). This is the intended use for backtesting.
+
+### daily_update.py re-requests still-open tips (2026-09-26)
+**Problem:** `tips()` is idempotent and safe to call repeatedly, but
+`scripts/daily_update.py` only ever called it with tips parsed from *that
+run's newly-downloaded* emails (`unseen_only=True` means each email is "new"
+exactly once). Combined with the fact that the newsletter arrives before
+market open, the very first (and, under the old code, only) call for a given
+tip happens before that tip's own trading day exists in EODHD -- so
+`actual_after` inside `tips()` is empty and zero post-tip-date rows are ever
+fetched, for every tip, indefinitely. The n1-before context was fine; the
+n2-after data -- the part actually needed to score a tip's outcome -- was
+never backfilled by any later run.
+
+**Decision:** every run of `daily_update.py` now builds its `tip_list` from
+two sources: tips parsed from today's new emails, plus any tip already in
+`tip_details` whose `tip_date` is within the last `n2 * 2 + 5` calendar days
+(the same buffer `tips()` itself uses internally for its fetch window --
+see `_still_open_tips()` in `scripts/daily_update.py`). `tips()`'s existing
+idempotent re-fetch + `INSERT OR REPLACE` then naturally fills in one more
+real trading day per run until the window is complete.
+
+**Alternative considered:** instead of a calendar-day cutoff on `tip_date`,
+check actual row coverage in the price table (`COUNT(*) WHERE date >
+tip_date`) and only re-include a tip while that count is `< n2`. This is more
+precise (stops re-fetching the instant a tip's window is genuinely resolved)
+but was rejected for now: the price table can contain padded rows (vo=0,
+forward-filled -- see "Padded rows use zero volume" above), so a naive row
+count doesn't necessarily match what `tips()` itself considers "done" (which
+counts dates actually returned by EODHD, pre-padding). Correctly reproducing
+that logic outside `tips()` is nontrivial, whereas the calendar-day cutoff
+matches the "wide fetch, trim after" philosophy already used everywhere else
+in this codebase (see below) and only costs a handful of harmless, idempotent
+re-fetches for tips whose window finished early within the buffer period. If
+EODHD call volume ever becomes a real constraint, the row-coverage check
+could be layered on top as an optimization rather than replacing this.
 
 ### Calendar-day buffer for end_date in tips()
 **Decision:** The fetch window end is tip_date + n2*2 + 5 calendar days, not

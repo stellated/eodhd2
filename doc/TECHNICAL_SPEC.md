@@ -85,8 +85,8 @@ To add a new exchange: append one entry here. Everything else picks it up.
 ### Default policy dictionaries (module-level)
 ```python
 DEFAULT_N_DAYS = {"1d": 60, "1m": 5, "5m": 10, "1h": 20}
-DEFAULT_N1 = 3   # trading days before tip date for tips()
-DEFAULT_N2 = 10  # trading days after tip date for tips()
+DEFAULT_N1 = 20  # trading days before tip date for tips()
+DEFAULT_N2 = 20  # trading days after tip date for tips()
 ```
 
 ### Public functions
@@ -323,6 +323,37 @@ Both use INSERT OR REPLACE. Colour columns are INTEGER (nullable Int64 in pandas
 - `tips_sqlite2pandas(db, exchange_tablename, tips_tablename, start, end)`
 
 ---
+
+## scripts/daily_update.py — nightly automation
+
+Run by `ops/eodhd-daily-update.timer` / `.service` (systemd) via
+`ops/run_daily_update.sh`, which pulls the canonical db from remote storage
+(rclone), runs this script, and pushes it back. The script itself is
+storage-agnostic — it just reads/writes whatever `--db-path` points at.
+
+Each run:
+1. Downloads unseen tip emails (`email_downloader.download_emails`,
+   `unseen_only=True`).
+2. If any arrived, parses them and writes `tip_exchange` / `tip_details`
+   (`parse_tip_emails`, `tips_exchange2sqlite`).
+3. Builds `tip_list` for `tips()` from **two** sources, unioned: tips parsed
+   just now, plus every `(code, tip_date)` already in `tip_details` with
+   `tip_date >= date.today() - (n2*2+5)` calendar days (`_still_open_tips()`).
+   The cutoff mirrors the calendar-day buffer `tips()` uses internally, so
+   it's exactly as generous as the window `tips()` will actually try to fill.
+   The union is sorted by `(tip_date, code)` before use -- a plain `set`'s
+   iteration order is hash-based and scrambles from run to run, which makes
+   the log (and diagnosing a failure from it) much harder to follow.
+4. Calls `tips()` once with the sorted list.
+
+This backfill step exists because the newsletter arrives before US market
+open: the first time a brand-new tip is seen, `tips()` can only fetch the n1
+days *before* tip_date — the n2 days *after* don't exist in EODHD yet.
+Without re-requesting a tip on later runs, that post-tip-date window (the
+part needed to score the tip's outcome) would never get filled in. See
+`doc/DESIGN_DECISIONS.md` ("daily_update.py re-requests still-open tips") for
+the full rationale, including why this uses a calendar-day cutoff rather than
+checking actual row coverage in the price table.
 
 ## Dependencies
 

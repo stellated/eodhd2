@@ -35,15 +35,25 @@ def download_emails(imap_server,
                     sender_email,
                     write=True,
                     n=None,
-                    next_n=None):
+                    next_n=None,
+                    unseen_only=False):
     # Connect to the IMAP server
     mail = imaplib.IMAP4_SSL(imap_server)
     mail.login(username, password)
     # mail.select("_Shares")
     mail.select("Inbox/SDA")
 
-    # Search for emails from the specified sender
-    status, messages = mail.search(None, f'(FROM "{sender_email}")')
+    # Search for emails from the specified sender. unseen_only=True is for
+    # unattended/scheduled runs against a scratch mailbox: combined with the
+    # \\Seen flag this function already sets below, it means each run only
+    # re-processes emails that arrived since the last successful run, instead
+    # of re-downloading the whole mailbox history every time (relevant when
+    # the caller has no local record of what it already saw, e.g. a stateless
+    # VM that doesn't keep previously-downloaded .eml files around).
+    search_criteria = f'(FROM "{sender_email}")'
+    if unseen_only:
+        search_criteria = f'(FROM "{sender_email}" UNSEEN)'
+    status, messages = mail.search(None, search_criteria)
     if status != "OK":
         print("No messages found!")
         return

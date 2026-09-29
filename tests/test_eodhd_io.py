@@ -4,18 +4,22 @@ from unittest import mock
 import pandas as pd
 import pytest
 import requests
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.pandas import column, data_frames, range_indexes
 
 from src.eodhd_io import (
+    DAILY_CSV_COLUMNS,
     Database,
+    _eodhd_fetch_csv,
+    _TransientEodhdResponse,
     add_local_time,
     csv2pandas_daily,
     csv2pandas_intraday,
     fetch_daily,
     pandas2polars,
     polars2pandas,
+    tips,
 )
 
 
@@ -221,6 +225,93 @@ def test_fetch_daily_error(mock_fetch):
     with pytest.raises(requests.HTTPError):
         fetch_daily("AAPL.US", "fake_token")
 
+
+# --- Tests for the transient-bad-response retry (200 OK, non-CSV body) ---
+@mock.patch("time.sleep")
+@mock.patch("src.eodhd_io._fetch_with_retry")
+def test_eodhd_fetch_csv_retries_transient_bad_response(mock_fetch, mock_sleep):
+    """A 200 OK with a non-CSV body (e.g. a rate-limit message returned
+    without a 4xx/5xx status) is retried once; a valid response on the
+    retry succeeds transparently."""
+    bad_response = mock.MagicMock(status_code=200, text='{"error": "rate limited"}')
+    bad_response.raise_for_status = lambda: None
+    good_response = mock.MagicMock(
+        status_code=200,
+        text="Date,Open,High,Low,Close,Adjusted_close,Volume\n"
+             "2022-01-01,100,101,99,100.5,100.3,1000000",
+    )
+    good_response.raise_for_status = lambda: None
+    mock_fetch.side_effect = [bad_response, good_response]
+
+    raw = _eodhd_fetch_csv("https://example.com/eod/AAPL.US?api_token=secret", DAILY_CSV_COLUMNS)
+
+    assert set(DAILY_CSV_COLUMNS).issubset(raw.columns)
+    assert mock_fetch.call_count == 2
+    mock_sleep.assert_called_once()
+
+@mock.patch("time.sleep")
+@mock.patch("src.eodhd_io._fetch_with_retry")
+def test_eodhd_fetch_csv_gives_up_after_retry(mock_fetch, mock_sleep):
+    """A persistently bad response (never valid CSV) fails after the retry
+    budget is exhausted, with the token redacted and the status/body visible
+    in the error for diagnosis."""
+    bad_response = mock.MagicMock(status_code=200, text='{"error": "rate limited"}')
+    bad_response.raise_for_status = lambda: None
+    mock_fetch.return_value = bad_response
+
+    with pytest.raises(_TransientEodhdResponse) as exc_info:
+        _eodhd_fetch_csv(
+            "https://example.com/eod/AAPL.US?api_token=secret123", DAILY_CSV_COLUMNS
+        )
+
+    assert mock_fetch.call_count == 2
+    assert "secret123" not in str(exc_info.value)
+    assert "REDACTED" in str(exc_info.value)
+    assert "rate limited" in str(exc_info.value)
+
+
+# --- Tests for tips()'s per-tip resilience (one bad tip doesn't abort the run) ---
+@mock.patch("src.eodhd_io.fetch_daily")
+@mock.patch("src.eodhd_io._get_calendar")
+def test_tips_skips_failing_tip_and_continues(
+    mock_get_calendar, mock_fetch_daily, tmp_path, caplog
+):
+    """If fetch_daily raises for one tip, tips() logs it and still fetches
+    and stores every other tip in the list -- it must not abort the whole
+    batch over a single bad ticker/response."""
+    mock_get_calendar.return_value = mock.MagicMock()  # unused: n1=0 short-circuits it
+    tip_date = date(2026, 9, 1)
+
+    def fake_fetch_daily(code, api_token, from_date=None, to_date=None):
+        if code == "BAD.US":
+            raise ValueError("simulated EODHD failure")
+        ts = int(pd.Timestamp(tip_date).timestamp())
+        return pd.DataFrame({
+            "code": [code],
+            "timestamp": [ts],
+            "datetime": [pd.Timestamp(tip_date)],
+            "date": [tip_date],
+            "op": [100.0], "hi": [101.0], "lo": [99.0], "cl": [100.5], "ac": [100.5],
+            "vo": [1000],
+        })
+
+    mock_fetch_daily.side_effect = fake_fetch_daily
+
+    with Database(tmp_path / "test.db", api_token="fake_token") as db:
+        with caplog.at_level("ERROR"):
+            tips(
+                db,
+                [("BAD.US", tip_date), ("GOOD.US", tip_date)],
+                "daily",
+                "1d",
+                n1=0,
+                n2=0,
+            )
+        pdf = pd.read_sql("SELECT code FROM daily", db.conn)
+
+    assert list(pdf["code"]) == ["GOOD.US"]
+    assert any("BAD.US" in rec.message for rec in caplog.records)
+
 # --- Hypothesis Test ---
 # CHANGED: the @given(...) strategy below used to be attached to a
 # vestigial test_min_date(df) (no assertions, just a print) that sat
@@ -238,7 +329,10 @@ _nonneg_int = st.integers(min_value=0, max_value=2**31 - 1)
 _nonneg_float = st.floats(min_value=0, allow_nan=False, allow_infinity=False)
 
 
-@settings(max_examples=50)
+# too_slow suppressed: fails on constrained hardware (e.g. a low-CPU VM)
+# where drawing a DataFrame example legitimately takes >0.1s -- not a sign
+# of a bad strategy.
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
 @given(
     df=data_frames(
         columns=[

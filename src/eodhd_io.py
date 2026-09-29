@@ -40,6 +40,8 @@ from __future__ import annotations
 import io
 import logging
 import pathlib
+import re
+import shutil
 import sqlite3
 from datetime import date, datetime, time, timedelta
 from typing import Optional, Union
@@ -49,7 +51,13 @@ import exchange_calendars as ec
 import pandas as pd
 import polars as pl
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    wait_fixed,
+)
 
 # Set up logging
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -75,8 +83,14 @@ EXCHANGE_INFO: dict[str, dict] = {
 DEFAULT_N_DAYS: dict[str, int] = {"1d": 60, "1m": 5, "5m": 10, "1h": 20}
 
 # Default n1 / n2 for tips() (trading days before / after tip date).
-DEFAULT_N1: int = 3
-DEFAULT_N2: int = 10
+DEFAULT_N1: int = 20
+DEFAULT_N2: int = 20
+
+# Columns EODHD's CSV responses must contain. Shared between the network
+# fetch path (_eodhd_fetch_csv, validated as soon as the HTTP response comes
+# back) and the file-based path (csv2pandas_daily/csv2pandas_intraday).
+DAILY_CSV_COLUMNS = {"Date", "Open", "High", "Low", "Close", "Adjusted_close", "Volume"}
+INTRADAY_CSV_COLUMNS = {"Timestamp", "Open", "High", "Low", "Close", "Volume"}
 
 # Cache open exchange_calendars objects (relatively expensive to construct)
 _calendar_cache: dict[str, ec.ExchangeCalendar] = {}
@@ -223,6 +237,44 @@ def _fetch_with_retry(url: str, **kwargs) -> requests.Response:
     return requests.get(url, **kwargs)
 
 
+def _resource_snapshot() -> str:
+    """Best-effort memory/disk snapshot for diagnostic logging on a failure
+    path (never called on the successful path -- no per-call overhead).
+    /proc/meminfo is Linux-only; falls back to disk-only elsewhere (e.g. a
+    macOS test run) rather than raising.
+    """
+    parts = []
+    try:
+        meminfo = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, val = line.split(":", 1)
+                meminfo[key] = val.strip()
+        parts.append(
+            f"mem_available={meminfo.get('MemAvailable', '?')} "
+            f"swap_free={meminfo.get('SwapFree', '?')}"
+        )
+    except OSError:
+        pass
+    try:
+        disk_free_gb = shutil.disk_usage("/").free / 1e9
+        parts.append(f"disk_free={disk_free_gb:.2f}GB")
+    except OSError:
+        pass
+    return " ".join(parts) if parts else "resource snapshot unavailable"
+
+
+class _TransientEodhdResponse(ValueError):
+    """Raised when EODHD returns 200 OK but the body isn't the CSV we asked
+    for (e.g. a rate-limit/quota message returned without a 4xx/5xx status).
+    Distinct from a plain ValueError so retry logic can target it precisely.
+    """
+
+
+def _redact_token(url: str) -> str:
+    return re.sub(r"api_token=[^&]+", "api_token=REDACTED", url)
+
+
 # ---------------------------------------------------------------------------
 # 1a. csv2pandas_daily
 # ---------------------------------------------------------------------------
@@ -241,9 +293,8 @@ def csv2pandas_daily(code: str, csv_path: pathlib.Path) -> pd.DataFrame:
     raw = pd.read_csv(csv_path)
 
     # Validate required columns
-    required_columns = {"Date", "Open", "High", "Low", "Close", "Adjusted_close", "Volume"}
-    if not required_columns.issubset(raw.columns):
-        missing = required_columns - set(raw.columns)
+    if not DAILY_CSV_COLUMNS.issubset(raw.columns):
+        missing = DAILY_CSV_COLUMNS - set(raw.columns)
         raise ValueError(f"Missing required columns in daily CSV: {missing}")
 
     raw = _parse_ohlcv(raw, has_ac=True)
@@ -313,9 +364,8 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
     raw = pd.read_csv(csv_path)
 
     # Validate required columns
-    required_columns = {"Timestamp", "Open", "High", "Low", "Close", "Volume"}
-    if not required_columns.issubset(raw.columns):
-        missing = required_columns - set(raw.columns)
+    if not INTRADAY_CSV_COLUMNS.issubset(raw.columns):
+        missing = INTRADAY_CSV_COLUMNS - set(raw.columns)
         raise ValueError(f"Missing required columns in intraday CSV: {missing}")
 
     # Check Gmtoffset
@@ -594,8 +644,23 @@ def polars2sqlite(
 EODHD_BASE = "https://eodhd.com/api"
 
 
-def _eodhd_fetch_csv(url: str) -> pd.DataFrame:
-    """GET a URL that returns CSV and parse it into a DataFrame."""
+@retry(
+    stop=stop_after_attempt(2),
+    wait=wait_fixed(3),
+    retry=retry_if_exception_type(_TransientEodhdResponse),
+    reraise=True,
+)
+def _eodhd_fetch_csv(url: str, required_columns: set) -> pd.DataFrame:
+    """GET a URL that returns CSV and parse it into a DataFrame.
+    Validates the response actually contains `required_columns` right here,
+    with the real HTTP status/body still in hand -- EODHD has been observed
+    returning 200 OK with a non-CSV body (e.g. under load) rather than a
+    proper 4xx/5xx, which would otherwise only surface much later, several
+    calls removed from the response, as a confusing "missing columns" error
+    with no way to tell what actually went wrong. One retry (short, fixed
+    backoff) in case it's transient; a real problem (bad ticker, bad token)
+    fails within two attempts rather than looping indefinitely.
+    """
     # raise_for_status() is deliberately outside _fetch_with_retry's @retry:
     # tenacity only retries the requests.get() call, so retries cover
     # transient transport failures (timeouts, connection resets), not HTTP
@@ -603,7 +668,20 @@ def _eodhd_fetch_csv(url: str) -> pd.DataFrame:
     # 3 times against a request that will never succeed.
     resp = _fetch_with_retry(url, timeout=30)
     resp.raise_for_status()
-    return pd.read_csv(io.StringIO(resp.text))
+    try:
+        raw = pd.read_csv(io.StringIO(resp.text))
+    except pd.errors.ParserError as e:
+        raise _TransientEodhdResponse(
+            f"EODHD response for {_redact_token(url)} could not be parsed as "
+            f"CSV ({e}). status={resp.status_code} body_snippet={resp.text[:200]!r}"
+        ) from e
+    if not required_columns.issubset(raw.columns):
+        raise _TransientEodhdResponse(
+            f"EODHD response for {_redact_token(url)} did not contain expected "
+            f"columns {sorted(required_columns)} -- got {list(raw.columns)}. "
+            f"status={resp.status_code} body_snippet={resp.text[:200]!r}"
+        )
+    return raw
 
 
 def fetch_daily(
@@ -623,7 +701,7 @@ def fetch_daily(
     if to_date:
         params += f"&to={to_date.isoformat()}"
     url = f"{EODHD_BASE}/eod/{code}?{params}"
-    raw_csv = _eodhd_fetch_csv(url)
+    raw_csv = _eodhd_fetch_csv(url, DAILY_CSV_COLUMNS)
     # Date Open High Low Close Adjusted_close Volume
     # yyyy-mm-dd ...
     # Write to a temp buffer so csv2pandas_daily can process it normally
@@ -651,7 +729,7 @@ def fetch_intraday(
     if to_ts:
         params += f"&to={to_ts}"
     url = f"{EODHD_BASE}/intraday/{code}?{params}"
-    raw_csv = _eodhd_fetch_csv(url)
+    raw_csv = _eodhd_fetch_csv(url, INTRADAY_CSV_COLUMNS)
     buf = io.StringIO()
     raw_csv.to_csv(buf, index=False)
     buf.seek(0)
@@ -674,7 +752,9 @@ def tips(
     For each (code, tip_date) in tip_list, fetches n1 trading days before tip_date
     through n2 trading days after tip_date and stores the data in tablename.
     Uses INSERT OR REPLACE so repeated calls are idempotent and safe to run
-    as a daily scheduled job.
+    as a daily scheduled job. A failure fetching/storing any single tip is
+    logged (with a resource snapshot) and skipped rather than aborting the
+    whole call -- the skipped tip is simply retried on a later run.
 
     Parameters
     ----------
@@ -703,59 +783,75 @@ def tips(
         else:
             fetched_ranges.add((code, tip_date))
 
-        suffix = _suffix(code)
-        cal = _get_calendar(suffix)
-        # CHANGED: use calendar-day buffers for the fetch window instead of
-        # session counts. exchange_calendars omits half-days (e.g. July 3rd
-        # before Independence Day), so session-based end_date would miss them.
-        # We fetch a wide calendar-day window and trim after using actual dates.
-        cal_start = _n_sessions_before(cal, tip_date, n1)
-        # Go wide on the end: n2 sessions * 2 calendar days is always enough
-        # to cover any half-days or long weekends.
-        cal_end = tip_date + timedelta(days=n2 * 2 + 5)
+        # The whole per-tip fetch/trim/write is wrapped broadly: this is an
+        # unattended nightly job over potentially hundreds of tips, already
+        # designed to tolerate partial progress (idempotent, re-requested via
+        # _still_open_tips() on later runs). One bad ticker or a single bad
+        # EODHD response should never abort every other tip still queued --
+        # log full context (including a resource snapshot, in case it's this
+        # VM that's the problem, not EODHD) and move on.
+        try:
+            suffix = _suffix(code)
+            cal = _get_calendar(suffix)
+            # CHANGED: use calendar-day buffers for the fetch window instead of
+            # session counts. exchange_calendars omits half-days (e.g. July 3rd
+            # before Independence Day), so session-based end_date would miss them.
+            # We fetch a wide calendar-day window and trim after using actual dates.
+            cal_start = _n_sessions_before(cal, tip_date, n1)
+            # Go wide on the end: n2 sessions * 2 calendar days is always enough
+            # to cover any half-days or long weekends.
+            cal_end = tip_date + timedelta(days=n2 * 2 + 5)
 
-        if _is_intraday(interval):
-            from_ts = int(
-                datetime(cal_start.year, cal_start.month, cal_start.day).timestamp()
-            ) - 86400
-            to_ts = int(
-                datetime(cal_end.year, cal_end.month, cal_end.day, 23, 59, 59).timestamp()
-            ) + 86400
-            pdf = fetch_intraday(code, db.api_token, interval, from_ts=from_ts, to_ts=to_ts)
-            # Trim: keep cal_start through the nth actual trading date after tip
-            actual_after = sorted(d for d in pdf["local_date"].unique() if d >= tip_date)
-            end_date = actual_after[n2] if len(actual_after) > n2 else (
-                actual_after[-1] if actual_after else cal_end
-            )
-            pdf = pdf[
-                (pdf["local_date"] >= cal_start) & (pdf["local_date"] <= end_date)
-            ].reset_index(drop=True)
-
-            # Log warning if fetch window mismatch
-            if len(actual_after) < n2 + 1:
-                logging.warning(
-                    f"Fetched data for {code} does not cover {n2} days after {tip_date}. "
-                    f"Actual: {len(actual_after)} days."
+            if _is_intraday(interval):
+                from_ts = int(
+                    datetime(cal_start.year, cal_start.month, cal_start.day).timestamp()
+                ) - 86400
+                to_ts = int(
+                    datetime(cal_end.year, cal_end.month, cal_end.day, 23, 59, 59).timestamp()
+                ) + 86400
+                pdf = fetch_intraday(code, db.api_token, interval, from_ts=from_ts, to_ts=to_ts)
+                # Trim: keep cal_start through the nth actual trading date after tip
+                actual_after = sorted(d for d in pdf["local_date"].unique() if d >= tip_date)
+                end_date = actual_after[n2] if len(actual_after) > n2 else (
+                    actual_after[-1] if actual_after else cal_end
                 )
+                pdf = pdf[
+                    (pdf["local_date"] >= cal_start) & (pdf["local_date"] <= end_date)
+                ].reset_index(drop=True)
 
-        else:
-            pdf = fetch_daily(code, db.api_token, from_date=cal_start, to_date=cal_end)
-            # Trim daily: keep cal_start through nth actual date after tip
-            actual_after = sorted(d for d in pdf["date"].unique() if d >= tip_date)
-            end_date = actual_after[n2] if len(actual_after) > n2 else (
-                actual_after[-1] if actual_after else cal_end
-            )
-            pdf = pdf[(pdf["date"] >= cal_start) & (pdf["date"] <= end_date)].reset_index(drop=True)
+                # Log warning if fetch window mismatch
+                if len(actual_after) < n2 + 1:
+                    logging.warning(
+                        f"Fetched data for {code} does not cover {n2} days after {tip_date}. "
+                        f"Actual: {len(actual_after)} days."
+                    )
 
-            # Log warning if fetch window mismatch
-            if len(actual_after) < n2 + 1:
-                logging.warning(
-                    f"Fetched data for {code} does not cover {n2} days after {tip_date}. "
-                    f"Actual: {len(actual_after)} days."
+            else:
+                pdf = fetch_daily(code, db.api_token, from_date=cal_start, to_date=cal_end)
+                # Trim daily: keep cal_start through nth actual date after tip
+                actual_after = sorted(d for d in pdf["date"].unique() if d >= tip_date)
+                end_date = actual_after[n2] if len(actual_after) > n2 else (
+                    actual_after[-1] if actual_after else cal_end
                 )
+                pdf = pdf[
+                    (pdf["date"] >= cal_start) & (pdf["date"] <= end_date)
+                ].reset_index(drop=True)
 
-        if not pdf.empty:
-            pandas2sqlite(pdf, db.conn, tablename)
+                # Log warning if fetch window mismatch
+                if len(actual_after) < n2 + 1:
+                    logging.warning(
+                        f"Fetched data for {code} does not cover {n2} days after {tip_date}. "
+                        f"Actual: {len(actual_after)} days."
+                    )
+
+            if not pdf.empty:
+                pandas2sqlite(pdf, db.conn, tablename)
+        except Exception as e:
+            logging.error(
+                f"Skipping {code} tip on {tip_date}: failed to fetch/store price "
+                f"data ({type(e).__name__}: {e}). {_resource_snapshot()}"
+            )
+            continue
 
 
 # ---------------------------------------------------------------------------
