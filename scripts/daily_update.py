@@ -21,6 +21,15 @@ closed but price coverage is still short, usually meaning EODHD stopped
 following a ticker through a rename/split/merger and a ticker_aliases entry
 is needed -- see _log_unresolved_tips() and doc/DESIGN_DECISIONS.md
 ("ticker_aliases: smoothing renamed / split / merged / cashed-out tickers").
+
+--mode selects what this run actually fetches -- see doc/DESIGN_DECISIONS.md
+("weekday/Saturday/Sunday split") for why price fetching isn't done every
+day:
+  tips-only       parse new tip emails only, no price fetch (weekdays)
+  daily-price     also fetch daily OHLCV into PRICE_TABLENAME (Saturdays)
+  intraday-price  also fetch 5m intraday OHLCV into INTRADAY_TABLENAME (Sundays)
+Which mode runs which day is entirely a scheduling decision, made in ops/
+(three separate systemd timers), not in this script.
 """
 import argparse
 import logging
@@ -42,7 +51,16 @@ from tips_io import parse_tip_emails, tips_exchange2sqlite  # noqa: E402
 SENDER_EMAIL = "reports@stockdataanalytics.com"
 PRICE_TABLENAME = "daily"
 PRICE_INTERVAL = "1d"
+INTRADAY_TABLENAME = "intraday_5m"
+INTRADAY_INTERVAL = "5m"
 TIPS_TABLENAME = "tip_details"  # must match tips_exchange2sqlite's default
+
+# (tablename, interval) for each --mode that actually fetches price data.
+# "tips-only" has no entry -- checked explicitly in main() instead.
+MODE_PRICE_CONFIG = {
+    "daily-price": (PRICE_TABLENAME, PRICE_INTERVAL),
+    "intraday-price": (INTRADAY_TABLENAME, INTRADAY_INTERVAL),
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("daily_update")
@@ -117,6 +135,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db-path", required=True, type=Path)
     parser.add_argument("--eml-dir", required=True, type=Path)
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["tips-only", "daily-price", "intraday-price"],
+        help="tips-only: parse emails, no price fetch. daily-price: also "
+             "fetch daily OHLCV. intraday-price: also fetch 5m OHLCV.",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -143,22 +168,30 @@ def main() -> None:
         else:
             log.info("no new tip emails since last run")
 
-        # Matches the calendar-day buffer tips() itself uses internally
-        # (n2 * 2 + 5) so this cutoff is exactly as generous as the window
-        # tips() will actually try to fill.
-        cutoff = date.today() - timedelta(days=DEFAULT_N2 * 2 + 5)
-        open_tips = _still_open_tips(db, TIPS_TABLENAME, cutoff)
-        # Sorted for readable, reproducible logs -- a set union's iteration
-        # order is hash-based and scrambles from run to run, which made it
-        # impossible to tell from the log which tip ran next when diagnosing
-        # a failure (see doc/DESIGN_DECISIONS.md).
-        tip_list = sorted(set(new_tips) | set(open_tips), key=lambda t: (t[1], t[0]))
-
-        if tip_list:
-            tips(db, tip_list, PRICE_TABLENAME, PRICE_INTERVAL)
-            log.info("fetched price windows for %d tip(s)", len(tip_list))
+        if args.mode == "tips-only":
+            log.info("tips-only mode: skipping price fetch")
         else:
-            log.info("no tips (new or still-open) to fetch price windows for")
+            # Matches the calendar-day buffer tips() itself uses internally
+            # (n2 * 2 + 5) so this cutoff is exactly as generous as the window
+            # tips() will actually try to fill.
+            cutoff = date.today() - timedelta(days=DEFAULT_N2 * 2 + 5)
+            open_tips = _still_open_tips(db, TIPS_TABLENAME, cutoff)
+            # Sorted for readable, reproducible logs -- a set union's
+            # iteration order is hash-based and scrambles from run to run,
+            # which made it impossible to tell from the log which tip ran
+            # next when diagnosing a failure (see doc/DESIGN_DECISIONS.md).
+            tip_list = sorted(
+                set(new_tips) | set(open_tips), key=lambda t: (t[1], t[0])
+            )
+            tablename, interval = MODE_PRICE_CONFIG[args.mode]
+
+            if tip_list:
+                tips(db, tip_list, tablename, interval)
+                log.info(
+                    "fetched %s price windows for %d tip(s)", interval, len(tip_list)
+                )
+            else:
+                log.info("no tips (new or still-open) to fetch price windows for")
 
         _log_unresolved_tips(db)
 

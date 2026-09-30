@@ -8,8 +8,10 @@ __pycache__/
 .hypothesis/
 
 ops/daily-update.env
-ops/eodhd-daily-update.service
-ops/eodhd-daily-update.timer
+# All three weekday/Saturday/Sunday unit pairs -- host-specific (absolute
+# path, User=) so none of them are tracked, same as the original pair.
+ops/eodhd-daily-update*.service
+ops/eodhd-daily-update*.timer
 
 # Personal data captured for local inspection, not project source.
 # One directory-level rule covers every current and future file in the

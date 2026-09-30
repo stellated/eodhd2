@@ -3,9 +3,15 @@
 # the database. Pulls the canonical db down from remote storage (rclone),
 # runs the update, pushes it back, then deletes the local scratch copy.
 #
+# Usage: run_daily_update.sh <tips-only|daily-price|intraday-price>
+# The mode is baked into each of the three .service units' ExecStart= --
+# see doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split").
+#
 # Config comes from ops/daily-update.env (copy daily-update.env.example and
 # edit it for this machine) or environment overrides.
 set -euo pipefail
+
+MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price>}"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -16,6 +22,12 @@ if [ -f "${REPO_DIR}/ops/daily-update.env" ]; then
     # shellcheck disable=SC1091
     source "${REPO_DIR}/ops/daily-update.env"
 fi
+
+# Applied after sourcing daily-update.env so a WORK_DIR set there still gets
+# a mode-specific subdirectory -- keeps the three schedules' scratch space
+# (and the leftover-recovery check below) from colliding if runs ever
+# overlap (e.g. a big Saturday backlog still running into Sunday).
+WORK_DIR="${WORK_DIR}/${MODE}"
 
 DB_PATH="${WORK_DIR}/prod.db"
 EML_DIR="${WORK_DIR}/eml"
@@ -42,7 +54,7 @@ else
 fi
 
 "${REPO_DIR}/.venv/bin/python" "${REPO_DIR}/scripts/daily_update.py" \
-    --db-path "${DB_PATH}" --eml-dir "${EML_DIR}"
+    --db-path "${DB_PATH}" --eml-dir "${EML_DIR}" --mode "${MODE}"
 
 echo "[daily-update] pushing db back to ${RCLONE_REMOTE}"
 rclone copyto "${DB_PATH}" "${RCLONE_REMOTE}"

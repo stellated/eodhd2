@@ -414,6 +414,50 @@ FDP.US->DMC.US (1.0), VSCO.US->VSXY.US (1.0), FLGC.US->ZSTK.US (1.0),
 LBRDA.US->CHTR.US (0.236) -- see doc/DELISTING_RESEARCH_2026-09-30.md for
 the full research and the price-continuity verification for each.
 
+### weekday/Saturday/Sunday split (2026-09-30)
+**Decision:** `daily_update.py` takes a required `--mode
+{tips-only,daily-price,intraday-price}` flag instead of always fetching
+daily price data. Three separate systemd timer/service pairs in `ops/`
+(`eodhd-daily-update.timer`, `-1d.timer`, `-5m.timer`) each fire with a
+native systemd day-of-week filter (`OnCalendar=Mon,Tue,Wed,Thu,Fri ...`,
+`OnCalendar=Sat ...`, `OnCalendar=Sun ...`) and pass a fixed `--mode`
+through `ops/run_daily_update.sh`:
+- Weekdays: `tips-only` -- parse new tip emails, no price fetch at all.
+- Saturday: `daily-price` -- also fetch daily OHLCV into `PRICE_TABLENAME`.
+- Sunday: `intraday-price` -- also fetch 5-minute OHLCV into
+  `INTRADAY_TABLENAME` ("intraday_5m").
+
+**Reasoning:** price fetching is the EODHD-call-expensive, error-prone part
+of the pipeline (see "tips() per-tip failure handling" above); tip-email
+capture is cheap and needs to happen daily regardless, since a missed day's
+email is gone. Splitting them means weekdays stay fast and low-risk, and the
+two price-fetch modes -- which are the more expensive and more failure-prone
+operations -- each get a dedicated day rather than competing for the same
+run's EODHD quota. Saturday for daily bars (markets closed, the whole
+week's bars are published and settled) and Sunday for 5-minute intraday
+(kept on a separate day from Saturday's fetch, and 5-minute bars generate
+far more rows per ticker than daily bars, so it's also the more disk-hungry
+of the two) were chosen over, e.g., both running the same day, purely to
+spread load.
+
+**Why systemd day-of-week filtering instead of in-script branching:** the
+alternative (one timer firing daily, `daily_update.py` itself checking
+`date.today().weekday()`) would push scheduling policy into application
+code -- inconsistent with this project's existing separation of policy
+(caller/ops decides *when* and *what*) from mechanism (the script/library
+just does what it's told). It would also make manual testing harder: with
+separate units, any mode can be run on demand (`sudo systemctl start
+eodhd-daily-update-5m.service`) regardless of what day it actually is,
+which mattered a lot during the debugging in "tips() per-tip failure
+handling" above.
+
+**Deferred:** a weekday fetch for a "priority" subset of tickers/tips (Ian
+wants this eventually, not yet). `_log_unresolved_tips()` stays
+daily-price-only for now (not extended to check `intraday_5m` coverage) --
+once real 5-minute data exists, the plan is to audit it for consistency
+against the daily table directly, which is a more direct check than routing
+5-minute coverage through `unresolved_tips()` too.
+
 ---
 
 ## tips_io design

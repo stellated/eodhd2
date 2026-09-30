@@ -384,36 +384,55 @@ Both use INSERT OR REPLACE. Colour columns are INTEGER (nullable Int64 in pandas
 
 ## scripts/daily_update.py — nightly automation
 
-Run by `ops/eodhd-daily-update.timer` / `.service` (systemd) via
+Run by three separate systemd timer/service pairs in `ops/`
+(`eodhd-daily-update.timer`, `-1d.timer`, `-5m.timer`) via
 `ops/run_daily_update.sh`, which pulls the canonical db from remote storage
 (rclone), runs this script, and pushes it back. The script itself is
 storage-agnostic — it just reads/writes whatever `--db-path` points at.
 
+`--mode {tips-only,daily-price,intraday-price}` (required) selects what a
+run actually fetches — see `doc/DESIGN_DECISIONS.md`
+("weekday/Saturday/Sunday split"):
+- **tips-only** (weekdays, `eodhd-daily-update.timer`): parses emails only,
+  no price fetch at all.
+- **daily-price** (Saturdays, `eodhd-daily-update-1d.timer`): also fetches
+  daily OHLCV into `PRICE_TABLENAME` ("daily").
+- **intraday-price** (Sundays, `eodhd-daily-update-5m.timer`): also fetches
+  5-minute OHLCV into `INTRADAY_TABLENAME` ("intraday_5m").
+
 Each run:
 1. Downloads unseen tip emails (`email_downloader.download_emails`,
-   `unseen_only=True`).
+   `unseen_only=True`) — every mode does this, since it's cheap and the
+   whole point of the weekday runs.
 2. If any arrived, parses them and writes `tip_exchange` / `tip_details`
    (`parse_tip_emails`, `tips_exchange2sqlite`).
-3. Builds `tip_list` for `tips()` from **two** sources, unioned: tips parsed
-   just now, plus every `(code, tip_date)` already in `tip_details` with
-   `tip_date >= date.today() - (n2*2+5)` calendar days (`_still_open_tips()`).
-   The cutoff mirrors the calendar-day buffer `tips()` uses internally, so
-   it's exactly as generous as the window `tips()` will actually try to fill.
-   The union is sorted by `(tip_date, code)` before use -- a plain `set`'s
-   iteration order is hash-based and scrambles from run to run, which makes
-   the log (and diagnosing a failure from it) much harder to follow.
-4. Calls `tips()` once with the sorted list (if non-empty; logs and skips
-   otherwise).
+3. If `--mode` is `tips-only`, stops here (after step 5 below) — no price
+   fetch. Otherwise, builds `tip_list` for `tips()` from **two** sources,
+   unioned: tips parsed just now, plus every `(code, tip_date)` already in
+   `tip_details` with `tip_date >= date.today() - (n2*2+5)` calendar days
+   (`_still_open_tips()`). The cutoff mirrors the calendar-day buffer
+   `tips()` uses internally, so it's exactly as generous as the window
+   `tips()` will actually try to fill. The union is sorted by
+   `(tip_date, code)` before use -- a plain `set`'s iteration order is
+   hash-based and scrambles from run to run, which makes the log (and
+   diagnosing a failure from it) much harder to follow.
+4. Calls `tips()` once with the sorted list and the tablename/interval for
+   the current `--mode` (`MODE_PRICE_CONFIG`), if the list is non-empty
+   (logs and skips otherwise).
 5. Calls `_log_unresolved_tips(db)`: builds the *full* tip history via
    `_all_tips()` (unlike `_still_open_tips()`, this is not cutoff-filtered
    -- `unresolved_tips()` specifically needs tips whose window has already
    closed) and calls `eodhd_io.unresolved_tips()` against it. Logs a
    `WARNING` listing every flagged tip (code, tip_date, actual_days,
    last_available_date) if any, else an `INFO` "no unresolved tips" line.
-   Runs every time, regardless of whether step 4 had anything to do, so
-   this surfaces on its own rather than needing someone to remember to run
-   `unresolved_tips()` manually. See `doc/DESIGN_DECISIONS.md`
-   ("ticker_aliases...") for what to do with a flagged tip.
+   Runs every time regardless of `--mode` (including `tips-only`, and
+   regardless of whether step 4 had anything to do), so this surfaces on its
+   own rather than needing someone to remember to run `unresolved_tips()`
+   manually. See `doc/DESIGN_DECISIONS.md` ("ticker_aliases...") for what to
+   do with a flagged tip. Currently only checks `PRICE_TABLENAME`/
+   `PRICE_INTERVAL` ("daily"/"1d") -- intentionally not yet extended to
+   `intraday_5m` (see `doc/DESIGN_DECISIONS.md`,
+   "weekday/Saturday/Sunday split").
 
 This backfill step exists because the newsletter arrives before US market
 open: the first time a brand-new tip is seen, `tips()` can only fetch the n1
