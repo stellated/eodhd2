@@ -6,6 +6,7 @@ __pycache__/
 .idea/
 .pytest_cache/
 .hypothesis/
+.claude/
 
 ops/daily-update.env
 # All three weekday/Saturday/Sunday unit pairs -- host-specific (absolute
