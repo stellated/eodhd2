@@ -30,6 +30,15 @@ day:
   intraday-price  also fetch 5m intraday OHLCV into INTRADAY_TABLENAME (Sundays)
 Which mode runs which day is entirely a scheduling decision, made in ops/
 (three separate systemd timers), not in this script.
+
+--all-emails: download_emails()'s unseen_only marks each email \\Seen on the
+IMAP server itself -- shared state, not per-machine. If a second machine
+(e.g. a Mac running this manually against the same mailbox, for an
+independent comparison db) also wants every tip email regardless of which
+machine already claimed it, pass --all-emails to always re-search and
+re-parse every matching email (idempotent via INSERT OR REPLACE either way).
+See doc/DESIGN_DECISIONS.md ("--all-emails for a second independent
+consumer of the same mailbox").
 """
 import argparse
 import logging
@@ -142,6 +151,14 @@ def main() -> None:
         help="tips-only: parse emails, no price fetch. daily-price: also "
              "fetch daily OHLCV. intraday-price: also fetch 5m OHLCV.",
     )
+    parser.add_argument(
+        "--all-emails",
+        action="store_true",
+        help="Ignore IMAP \\Seen state: re-search and re-parse every "
+             "matching email, not just ones unseen by this mailbox. For a "
+             "second independent consumer of the same mailbox (see module "
+             "docstring) -- leave unset for the normal unseen_only run.",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -153,7 +170,7 @@ def main() -> None:
         password=os.environ["imap_password"],
         target_folder=args.eml_dir,
         sender_email=SENDER_EMAIL,
-        unseen_only=True,
+        unseen_only=not args.all_emails,
     )
 
     eml_files = sorted(args.eml_dir.glob("*.eml"))

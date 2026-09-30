@@ -3,15 +3,19 @@
 # the database. Pulls the canonical db down from remote storage (rclone),
 # runs the update, pushes it back, then deletes the local scratch copy.
 #
-# Usage: run_daily_update.sh <tips-only|daily-price|intraday-price>
+# Usage: run_daily_update.sh <tips-only|daily-price|intraday-price> [extra daily_update.py args, e.g. --all-emails]
 # The mode is baked into each of the three .service units' ExecStart= --
-# see doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split").
+# see doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split"). Any
+# additional args (e.g. --all-emails, for a second independent consumer of
+# the same mailbox -- see scripts/daily_update.py's docstring) are passed
+# straight through to daily_update.py.
 #
 # Config comes from ops/daily-update.env (copy daily-update.env.example and
 # edit it for this machine) or environment overrides.
 set -euo pipefail
 
-MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price>}"
+MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price> [extra args]}"
+shift
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -54,7 +58,7 @@ else
 fi
 
 "${REPO_DIR}/.venv/bin/python" "${REPO_DIR}/scripts/daily_update.py" \
-    --db-path "${DB_PATH}" --eml-dir "${EML_DIR}" --mode "${MODE}"
+    --db-path "${DB_PATH}" --eml-dir "${EML_DIR}" --mode "${MODE}" "$@"
 
 echo "[daily-update] pushing db back to ${RCLONE_REMOTE}"
 rclone copyto "${DB_PATH}" "${RCLONE_REMOTE}"

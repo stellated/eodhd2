@@ -458,6 +458,32 @@ once real 5-minute data exists, the plan is to audit it for consistency
 against the daily table directly, which is a more direct check than routing
 5-minute coverage through `unresolved_tips()` too.
 
+### --all-emails for a second independent consumer of the same mailbox (2026-09-30)
+**Problem:** Ian plans to run `daily_update.py` manually on his Mac, against
+the same IMAP mailbox as `mars`'s scheduled runs, to build an independent
+comparison database. `download_emails(..., unseen_only=True)` marks each
+email `\Seen` on the mail server itself -- shared state, not per-machine.
+Whichever of `mars`/the Mac happens to run first on a given day claims that
+day's tip email; the other sees nothing new that day. Pointing the Mac's
+`ops/daily-update.env` at a different `RCLONE_REMOTE` (separate OneDrive
+path, already planned) solves "don't clobber mars's db" but not this --
+the contention is upstream, at the mailbox, before either machine's
+database is even involved.
+
+**Decision:** a `--all-emails` flag on `daily_update.py`, forwarded through
+`run_daily_update.sh`'s new passthrough (`run_daily_update.sh <mode>
+[extra args]`, everything after `<mode>` passed straight to
+`daily_update.py`). When set, `unseen_only=False`: always re-searches and
+re-parses every matching email regardless of `\Seen` state, decoupling that
+consumer entirely from whatever the other machine has already claimed.
+
+**Reasoning:** re-parsing the full matching history every run is slower
+(re-downloads emails already seen) but `tips_exchange2sqlite`'s `INSERT OR
+REPLACE` makes it harmless/idempotent, and it was the simplest fix that
+didn't require a second mailbox/forwarding setup. `mars`'s own scheduled
+runs are unaffected -- the flag defaults off, so `unseen_only=True` there,
+unchanged.
+
 ---
 
 ## tips_io design
