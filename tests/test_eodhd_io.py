@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from unittest import mock
 
 import pandas as pd
@@ -20,6 +20,7 @@ from src.eodhd_io import (
     pandas2polars,
     polars2pandas,
     tips,
+    unresolved_tips,
 )
 
 
@@ -311,6 +312,60 @@ def test_tips_skips_failing_tip_and_continues(
 
     assert list(pdf["code"]) == ["GOOD.US"]
     assert any("BAD.US" in rec.message for rec in caplog.records)
+
+
+# --- Tests for unresolved_tips() ---
+def _seed_daily_dates(db, rows):
+    """rows: list of (code, date_str). Minimal schema -- only the columns
+    unresolved_tips()'s query touches."""
+    db.conn.execute("CREATE TABLE daily (code TEXT, date TEXT)")
+    db.conn.executemany("INSERT INTO daily (code, date) VALUES (?, ?)", rows)
+    db.conn.commit()
+
+def test_unresolved_tips_flags_closed_short_windows_only(tmp_path):
+    """A tip is only "unresolved" if its backfill window has fully closed
+    AND coverage is still short of n2 days -- not if the window is still
+    open (too recent to expect full coverage yet) and not if it's already
+    fully covered."""
+    n2 = 5
+    today = date.today()
+    closed_tip_date = today - timedelta(days=(n2 * 2 + 5) + 10)  # window long closed
+    open_tip_date = today - timedelta(days=2)  # window still open
+
+    with Database(tmp_path / "test.db") as db:
+        rows = []
+        # FULL.US: closed window, fully covered (n2 + 1 days from tip_date)
+        rows += [
+            ("FULL.US", (closed_tip_date + timedelta(days=i)).isoformat())
+            for i in range(n2 + 1)
+        ]
+        # PARTIAL.US: closed window, only 2 days of coverage (LBRDA-style)
+        rows += [
+            ("PARTIAL.US", (closed_tip_date + timedelta(days=i)).isoformat())
+            for i in range(2)
+        ]
+        # ZERO.US: closed window, no rows at all (GMGI-style) -- not seeded
+        # STILLOPEN.US: window still open, minimal coverage -- must NOT be flagged
+        rows.append(("STILLOPEN.US", open_tip_date.isoformat()))
+        _seed_daily_dates(db, rows)
+
+        tip_list = [
+            ("FULL.US", closed_tip_date),
+            ("PARTIAL.US", closed_tip_date),
+            ("ZERO.US", closed_tip_date),
+            ("STILLOPEN.US", open_tip_date),
+        ]
+        result = unresolved_tips(db, tip_list, "daily", "1d", n2=n2)
+
+    assert set(result["code"]) == {"PARTIAL.US", "ZERO.US"}
+
+    partial = result[result["code"] == "PARTIAL.US"].iloc[0]
+    assert partial["actual_days"] == 2
+    assert partial["last_available_date"] == closed_tip_date + timedelta(days=1)
+
+    zero = result[result["code"] == "ZERO.US"].iloc[0]
+    assert zero["actual_days"] == 0
+    assert zero["last_available_date"] is None
 
 # --- Hypothesis Test ---
 # CHANGED: the @given(...) strategy below used to be attached to a

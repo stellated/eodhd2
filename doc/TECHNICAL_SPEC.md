@@ -166,6 +166,19 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 - Trims using actual dates in returned data, not session counts
 - INSERT OR REPLACE: safe to run as daily scheduled job
 - Requires db.api_token to be set
+- A per-tip fetch/store failure is logged (with a memory/disk snapshot via
+  `_resource_snapshot()`) and skipped rather than aborting the whole call
+
+**unresolved_tips(db, tip_list, tablename, interval="1d", n1=None, n2=None)
+-> pd.DataFrame**
+- Tips whose backfill window has fully elapsed (`tip_date + n2*2+5` calendar
+  days is in the past) but whose price coverage in `tablename` is still
+  short of n2 days -- the closed counterpart to daily_update.py's
+  `_still_open_tips()`. Likely means the ticker was delisted/merged/halted
+  shortly after the tip.
+- Returns (not drops) these tips: `code, tip_date, actual_days,
+  last_available_date` -- see doc/DESIGN_DECISIONS.md on why this is
+  surfaced rather than silently filtered (survivorship bias).
 
 ### Database class
 

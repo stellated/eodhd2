@@ -236,12 +236,93 @@ re-fetches for tips whose window finished early within the buffer period. If
 EODHD call volume ever becomes a real constraint, the row-coverage check
 could be layered on top as an optimization rather than replacing this.
 
+### tips() per-tip failure handling (2026-09-29)
+**Problem:** The first real production run of `daily_update.py` (a ~1550-tip
+backlog) crashed partway through: one `fetch_daily` call got back a `200 OK`
+whose body wasn't the expected CSV, which surfaced several function calls
+and a re-serialization later as a confusing "missing columns" `ValueError`
+with no context left about the actual HTTP response -- and, because
+`tips()`'s loop had no error handling, that one bad response aborted the
+entire run, losing progress on every other tip still queued.
+
+**Decision:** three changes to `tips()`/`_eodhd_fetch_csv()` in
+`src/eodhd_io.py`:
+1. `tips()`'s per-tip loop wraps the fetch/trim/write in `try/except
+   Exception`: a failure is logged (code, tip_date, exception, and a
+   memory/disk snapshot from `_resource_snapshot()`) and skipped, not
+   raised. The design already tolerates partial progress (idempotent,
+   re-requested via `_still_open_tips()`), so this just extends that
+   tolerance to unexpected failures, not only "not enough days yet."
+2. `_eodhd_fetch_csv()` validates the response has the expected columns
+   right where the HTTP status/body are still available, raising a new
+   `_TransientEodhdResponse` (a `ValueError` subclass) with the redacted
+   URL, status, and a body snippet -- instead of the generic check deep
+   inside `csv2pandas_daily`, several calls removed from the response.
+3. `_eodhd_fetch_csv()` retries once (short fixed backoff) specifically on
+   `_TransientEodhdResponse`, in case the bad response was transient. A
+   permanently bad request (bad ticker, bad token) still fails within two
+   attempts rather than looping.
+
+**Reasoning:** An unattended nightly job over hundreds of tips should never
+let one bad response abort everything else -- the cost of over-tolerance
+(a skipped tip, retried next run) is far lower than the cost of
+under-tolerance (the whole night's progress lost). Root-causing the actual
+crash afterwards (see "unresolved_tips() surfaces permanently-short tips
+instead of dropping them" below) showed the bad responses were delisted
+tickers, not a rate limit as originally suspected -- exactly the kind of
+thing `_resource_snapshot()` and the redacted-URL/status/body diagnostics
+were meant to make traceable rather than requiring after-the-fact log
+archaeology.
+
 ### Calendar-day buffer for end_date in tips()
 **Decision:** The fetch window end is tip_date + n2*2 + 5 calendar days, not
 the nth session after tip_date.
 
 **Reasoning:** Same half-day issue as above. The buffer is always larger than
 needed; the actual n2 days are determined by counting real dates returned.
+
+### unresolved_tips() surfaces permanently-short tips instead of dropping them (2026-09-30)
+**Problem:** Once tips() and daily_update.py's per-tip resilience (see
+"tips() per-tip failure handling" above) were in place, a real production
+run surfaced several tips (GMGI.US, FDP.US, VSCO.US, FLGC.US, LBRDA.US)
+whose post-tip-date price window will never fill in -- EODHD has no more
+data for these tickers shortly after their tip date, most likely because
+they were delisted, merged, or halted. Any future analysis/backtesting code
+written against `n1=n2=20` assuming every tip has a full window would break
+on these, or silently need to filter them out somehow.
+
+**Decision:** `unresolved_tips(db, tip_list, tablename, interval, n1, n2)`
+identifies tips whose backfill window has fully closed (same
+`tip_date + n2*2+5` calendar-day buffer as `_still_open_tips()`/`tips()`
+use) but still have fewer than `n2` days of price coverage, and returns
+them (code, tip_date, actual_days, last_available_date) rather than
+dropping them from any table.
+
+**Reasoning:** Silently dropping or moving these tips to a separate,
+rarely-consulted table would be survivorship bias -- the industry-standard
+pitfall in backtesting, where systematically excluding delisted/failed
+securities makes results look better than reality, precisely because the
+excluded securities are disproportionately the failures. Professional
+databases (e.g. CRSP) handle this by keeping delisted securities with a
+delisting code/return rather than removing them. Given this project doesn't
+have delisting-reason data from EODHD, `unresolved_tips()` takes the
+lighter-weight equivalent: keep everything in one table, and give analysis
+code a function it must explicitly call to find (and consciously decide how
+to handle) the unresolved set, rather than a default that silently filters
+them out.
+
+**Why not a persisted status column:** Considered (Ian's original proposal:
+an integer error column, 0=good/1=delisted-empty/2=delisted-short) but
+rejected in favour of computing this on demand, consistent with this
+codebase's existing free-functions-over-stored-state philosophy
+(`_still_open_tips()` also computes on demand rather than caching). A
+persisted column needs a write path to stay correct and would need to
+classify *which* EODHD failure shape occurred (empty `Value` response vs.
+a short-but-valid CSV, as GMGI/FDP/VSCO/FLGC vs. LBRDA respectively) --
+`unresolved_tips()` avoids that classification entirely by checking the
+same underlying fact (is there still less than n2 days of coverage once
+the window has closed) that both failure shapes have in common, and will
+handle any other future failure shape the same way without changes.
 
 ---
 

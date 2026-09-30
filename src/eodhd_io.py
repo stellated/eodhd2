@@ -854,6 +854,75 @@ def tips(
             continue
 
 
+def unresolved_tips(
+    db: "Database",
+    tip_list: list[tuple[str, date]],
+    tablename: str,
+    interval: str = "1d",
+    n1: Optional[int] = None,
+    n2: Optional[int] = None,
+) -> pd.DataFrame:
+    """Tips whose backfill window has fully elapsed but whose post-tip-date
+    price coverage in `tablename` is still short of n2 days.
+
+    This is the closed counterpart to daily_update.py's _still_open_tips():
+    that one re-requests tips that haven't had enough calendar time to
+    accumulate n2 days yet (normal, not an error). This one looks at tips
+    whose window closed (tip_date + n2*2+5 calendar days is in the past --
+    the same buffer tips()/_still_open_tips() already use) and are STILL
+    short -- meaning the data will very likely never complete (e.g. the
+    ticker was delisted, merged, or halted shortly after the tip).
+
+    Returned, not dropped: analysis code has to look at this and decide
+    what to do with these tips, rather than them silently vanishing from
+    the dataset (survivorship bias -- see doc/DESIGN_DECISIONS.md).
+
+    Parameters
+    ----------
+    db : Database instance
+    tip_list : list of (code, tip_date) tuples -- e.g. from
+        list(zip(tips_df["code"], tips_df["tip_date"])) after
+        tips_sqlite2pandas()
+    tablename : price table to check coverage against (e.g. "daily")
+    interval : "1d", "5m", etc. -- selects date vs local_date
+    n1 : unused directly (accepted for symmetry with tips()); reserved
+    n2 : trading days after tip_date required for a "resolved" tip
+        (default: DEFAULT_N2)
+
+    Returns
+    -------
+    DataFrame: code, tip_date, actual_days, last_available_date (None if
+    zero rows were ever fetched for this tip's window).
+    """
+    n2 = n2 if n2 is not None else DEFAULT_N2
+    today = date.today()
+    date_col = "local_date" if _is_intraday(interval) else "date"
+
+    rows = []
+    for code, tip_date in tip_list:
+        if tip_date + timedelta(days=n2 * 2 + 5) >= today:
+            continue  # window still open -- _still_open_tips()'s job, not this one
+
+        found = sorted(
+            date.fromisoformat(r[0])
+            for r in db.conn.execute(
+                f"SELECT {date_col} FROM {tablename} WHERE code = ? AND {date_col} >= ?",  # noqa: S608
+                (code, tip_date.isoformat()),
+            )
+        )
+        if len(found) < n2 + 1:  # same threshold tips() itself warns on
+            rows.append({
+                "code": code,
+                "tip_date": tip_date,
+                "actual_days": len(found),
+                "last_available_date": found[-1] if found else None,
+            })
+
+    return pd.DataFrame(
+        rows, columns=["code", "tip_date", "actual_days", "last_available_date"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Database class
 # ---------------------------------------------------------------------------
