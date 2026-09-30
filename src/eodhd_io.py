@@ -737,6 +737,183 @@ def fetch_intraday(
 
 
 # ---------------------------------------------------------------------------
+# ticker_aliases: smoothing renamed / split / merged / cashed-out tickers
+# ---------------------------------------------------------------------------
+# EODHD doesn't follow a ticker through a rename, reverse split, merger, or
+# takeover -- its price series for the old symbol just stops. Investigating
+# a batch of these (see doc/DELISTING_RESEARCH_2026-09-30.md) found every
+# one was a rename/split/merger with full value continuity, not a loss --
+# but each required its own research to establish. ticker_aliases records
+# that research once per ticker so every future fetch resolves it
+# automatically. See doc/DESIGN_DECISIONS.md ("ticker_aliases...") for the
+# full design rationale.
+
+_DDL_TICKER_ALIASES = """
+CREATE TABLE IF NOT EXISTS ticker_aliases (
+    old_code TEXT NOT NULL,
+    new_code TEXT,
+    effective_date TEXT NOT NULL,
+    ratio REAL NOT NULL DEFAULT 1.0,
+    cash_price REAL,
+    reason TEXT,
+    PRIMARY KEY (old_code, effective_date),
+    CHECK ((new_code IS NOT NULL) OR (cash_price IS NOT NULL))
+);
+"""
+
+
+def add_ticker_alias(
+    db: "Database",
+    old_code: str,
+    effective_date: date,
+    new_code: Optional[str] = None,
+    ratio: float = 1.0,
+    cash_price: Optional[float] = None,
+    reason: Optional[str] = None,
+) -> None:
+    """Record that old_code's price series should, from effective_date
+    onward, be resolved via new_code (a rename/split/merger -- price is
+    ratio * new_code's price) or via a fixed cash_price (a cash-for-scrip
+    takeover -- no successor security to splice against). Exactly one of
+    new_code/cash_price must be given.
+
+    effective_date is a practical cutover date -- the day fetching old_code
+    directly from EODHD stops being useful -- which can lag the real-world
+    corporate-action date if EODHD kept serving old_code for a while after
+    the event (this happened with GMGI.US/MRDN.US: real rename 2026-03-03,
+    but EODHD's GMGI.US series stayed valid through 2026-05-04). Record the
+    real date/details in `reason` for human reference; only effective_date
+    drives resolution.
+
+    Takes effect on the next fetch through tips() / Database.fetch() /
+    Database.to_pandas() -- no separate backfill step needed, since those
+    already re-fetch idempotently.
+    """
+    if (new_code is None) == (cash_price is None):
+        raise ValueError("Exactly one of new_code or cash_price must be given.")
+    db.conn.execute(_DDL_TICKER_ALIASES)
+    db.conn.execute(
+        """
+        INSERT OR REPLACE INTO ticker_aliases
+            (old_code, new_code, effective_date, ratio, cash_price, reason)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (old_code, new_code, effective_date.isoformat(), ratio, cash_price, reason),
+    )
+    db.conn.commit()
+
+
+def _lookup_alias(db: "Database", code: str) -> Optional[dict]:
+    """The earliest alias row for `code`, or None if there isn't one / the
+    table doesn't exist yet. (Only one alias per old_code is resolved --
+    a ticker renamed twice is handled via chaining through new_code's own
+    alias, not multiple rows for the same old_code.)"""
+    try:
+        row = db.conn.execute(
+            """
+            SELECT new_code, effective_date, ratio, cash_price, reason
+            FROM ticker_aliases WHERE old_code = ?
+            ORDER BY effective_date ASC LIMIT 1
+            """,
+            (code,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None  # table doesn't exist yet
+    if row is None:
+        return None
+    new_code, effective_date, ratio, cash_price, reason = row
+    return {
+        "new_code": new_code,
+        "effective_date": date.fromisoformat(effective_date),
+        "ratio": ratio,
+        "cash_price": cash_price,
+        "reason": reason,
+    }
+
+
+def _generate_cashout_rows(
+    code: str, from_date: date, to_date: date, cash_price: float
+) -> pd.DataFrame:
+    """Flat, zero-volume rows at `cash_price` for every real trading session
+    in [from_date, to_date] -- a position closed out for cash, using the
+    same "padded rows, zero volume, price carried forward" convention as
+    ordinary missing-session padding (see doc/DESIGN_DECISIONS.md, "Padded
+    rows use zero volume"). Volume is 0 throughout: there's no real trading
+    volume to report for a position that no longer exists.
+    """
+    suffix = _suffix(code)
+    cal = _get_calendar(suffix)
+    sessions = (
+        cal.sessions_in_range(pd.Timestamp(from_date), pd.Timestamp(to_date))
+        if from_date <= to_date
+        else []
+    )
+    if len(sessions) == 0:
+        return pd.DataFrame(
+            columns=["code", "timestamp", "datetime", "date", "op", "hi", "lo", "cl", "ac", "vo"]
+        )
+    schedule = cal.schedule.loc[sessions]
+    open_ts = [int(schedule.loc[s, "open"].timestamp()) for s in sessions]
+    return pd.DataFrame({
+        "code": code,
+        "timestamp": pd.array(open_ts, dtype="int64"),
+        "datetime": pd.to_datetime(open_ts, unit="s", utc=True)
+            .tz_localize(None).astype("datetime64[us]"),
+        "date": [s.date() for s in sessions],
+        "op": cash_price, "hi": cash_price, "lo": cash_price, "cl": cash_price, "ac": cash_price,
+        "vo": 0,
+    })
+
+
+def _fetch_daily_resolved(
+    db: "Database",
+    code: str,
+    api_token: str,
+    from_date: date,
+    to_date: date,
+    _depth: int = 0,
+) -> pd.DataFrame:
+    """fetch_daily(), but transparently follows ticker_aliases so the
+    returned DataFrame is one continuous series under `code`, even if the
+    underlying security was renamed, split, merged, or cashed out partway
+    through [from_date, to_date]. Callers (tips(), Database.fetch(),
+    Database.to_pandas()) don't need to know any of this happened -- the
+    result is schema-identical to fetch_daily()'s and always labelled
+    `code` throughout, ready for pandas2sqlite() as usual.
+
+    Note: volume is NOT rescaled across an alias boundary (a split/merger's
+    share-count change doesn't translate meaningfully into "old ticker's
+    volume"), only price columns (op/hi/lo/cl/ac) are. Daily-only -- there
+    is no intraday equivalent yet (not needed by any current caller).
+    """
+    if _depth > 10:
+        raise ValueError(f"ticker_aliases chain too deep resolving {code} -- possible cycle?")
+
+    alias = _lookup_alias(db, code)
+    if alias is None or to_date < alias["effective_date"]:
+        return fetch_daily(code, api_token, from_date=from_date, to_date=to_date)
+
+    segments = []
+    if from_date < alias["effective_date"]:
+        pre_to = alias["effective_date"] - timedelta(days=1)
+        segments.append(fetch_daily(code, api_token, from_date=from_date, to_date=pre_to))
+
+    post_from = max(from_date, alias["effective_date"])
+    if alias["new_code"] is not None:
+        post = _fetch_daily_resolved(
+            db, alias["new_code"], api_token, post_from, to_date, _depth=_depth + 1
+        ).copy()
+        for col in ("op", "hi", "lo", "cl", "ac"):
+            post[col] = post[col] * alias["ratio"]
+        post["code"] = code
+    else:
+        post = _generate_cashout_rows(code, post_from, to_date, alias["cash_price"])
+    segments.append(post)
+
+    return pd.concat(segments, ignore_index=True).sort_values("date").reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
 # NEW: tips()
 # ---------------------------------------------------------------------------
 
@@ -827,7 +1004,7 @@ def tips(
                     )
 
             else:
-                pdf = fetch_daily(code, db.api_token, from_date=cal_start, to_date=cal_end)
+                pdf = _fetch_daily_resolved(db, code, db.api_token, cal_start, cal_end)
                 # Trim daily: keep cal_start through nth actual date after tip
                 actual_after = sorted(d for d in pdf["date"].unique() if d >= tip_date)
                 end_date = actual_after[n2] if len(actual_after) > n2 else (
@@ -870,8 +1047,14 @@ def unresolved_tips(
     accumulate n2 days yet (normal, not an error). This one looks at tips
     whose window closed (tip_date + n2*2+5 calendar days is in the past --
     the same buffer tips()/_still_open_tips() already use) and are STILL
-    short -- meaning the data will very likely never complete (e.g. the
-    ticker was delisted, merged, or halted shortly after the tip).
+    short. In practice this has turned out to usually mean the ticker was
+    renamed, split, or merged -- EODHD doesn't follow a ticker through those
+    events, it just stops serving the old symbol -- not that the position
+    was actually lost (see doc/DELISTING_RESEARCH_2026-09-30.md). Once
+    researched, the fix is a ticker_aliases entry (add_ticker_alias()),
+    which resolves the gap automatically on the next fetch; a tip that
+    stays in this list after that either hasn't been researched yet or is a
+    genuine unrecoverable loss.
 
     Returned, not dropped: analysis code has to look at this and decide
     what to do with these tips, rather than them silently vanishing from
@@ -1087,7 +1270,13 @@ class Database:
                 else None
             )
             pdf = fetch_intraday(code, token, interval, from_ts=from_ts, to_ts=to_ts)
+        elif from_date and to_date:
+            pdf = _fetch_daily_resolved(self, code, token, from_date, to_date)
         else:
+            # ticker_aliases resolution needs concrete dates to split the
+            # fetch at the alias boundary -- an open-ended fetch (EODHD's
+            # own default window) can't be resolved, so falls back to a
+            # plain fetch under `code` as before.
             pdf = fetch_daily(code, token, from_date=from_date, to_date=to_date)
         pandas2sqlite(pdf, self.conn, tablename)
 
@@ -1160,9 +1349,7 @@ class Database:
                         code, self.api_token, interval, from_ts=from_ts, to_ts=to_ts
                     )
                 else:
-                    pdf = fetch_daily(
-                        code, self.api_token, from_date=start, to_date=fetch_end
-                    )
+                    pdf = _fetch_daily_resolved(self, code, self.api_token, start, fetch_end)
                 pandas2sqlite(pdf, self.conn, tablename)
 
             # Re-derive end and start from dates actually in the table.

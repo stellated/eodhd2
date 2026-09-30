@@ -285,11 +285,14 @@ needed; the actual n2 days are determined by counting real dates returned.
 **Problem:** Once tips() and daily_update.py's per-tip resilience (see
 "tips() per-tip failure handling" above) were in place, a real production
 run surfaced several tips (GMGI.US, FDP.US, VSCO.US, FLGC.US, LBRDA.US)
-whose post-tip-date price window will never fill in -- EODHD has no more
-data for these tickers shortly after their tip date, most likely because
-they were delisted, merged, or halted. Any future analysis/backtesting code
-written against `n1=n2=20` assuming every tip has a full window would break
-on these, or silently need to filter them out somehow.
+whose post-tip-date price window wasn't filling in -- EODHD had stopped
+returning data for these tickers shortly after their tip date. Any future
+analysis/backtesting code written against `n1=n2=20` assuming every tip has
+a full window would break on these, or silently need to filter them out
+somehow. (Researching these afterwards showed the data stopping is usually
+*not* a delisting/loss -- see "ticker_aliases" below, added the same day --
+but `unresolved_tips()` itself doesn't assume either way; it just measures
+coverage.)
 
 **Decision:** `unresolved_tips(db, tip_list, tablename, interval, n1, n2)`
 identifies tips whose backfill window has fully closed (same
@@ -323,6 +326,80 @@ a short-but-valid CSV, as GMGI/FDP/VSCO/FLGC vs. LBRDA respectively) --
 same underlying fact (is there still less than n2 days of coverage once
 the window has closed) that both failure shapes have in common, and will
 handle any other future failure shape the same way without changes.
+
+### ticker_aliases: smoothing renamed / split / merged / cashed-out tickers (2026-09-30)
+**Problem:** Researching the five tips `unresolved_tips()` surfaced (see
+`doc/DELISTING_RESEARCH_2026-09-30.md`) found that EODHD doesn't follow a
+ticker through a rename, reverse split, or merger -- its price series for
+the old symbol just stops, with no pointer to the successor symbol. None of
+the five was actually a loss: four were pure renames/splits with full value
+continuity (GMGI/FDP/VSCO/FLGC), one was a completed stock-for-stock merger
+paid at fair value (LBRDA -> 0.236 CHTR shares/share). Ian also raised a
+third case worth planning for even though none of the five needed it: a
+pure cash-for-scrip takeover, where the position is closed for a fixed cash
+amount with no successor security at all.
+
+**Decision:** a `ticker_aliases` table (`old_code, new_code, effective_date,
+ratio, cash_price, reason`, added/edited via `add_ticker_alias()`) plus
+`_fetch_daily_resolved()`, which `tips()`, `Database.fetch()`, and
+`Database.to_pandas()` now call instead of `fetch_daily()` directly for
+daily data. It resolves in one of two ways from `effective_date` onward:
+- **`new_code` set** (rename/split/merger): fetch `new_code`'s price
+  series, multiply price columns (op/hi/lo/cl/ac -- not volume, see below)
+  by `ratio`, and label the result `old_code`. Chains automatically (a
+  ticker renamed twice resolves through `new_code`'s own alias).
+- **`new_code` NULL, `cash_price` set** (cash-for-scrip): no successor
+  security to splice against, so generate flat rows at `cash_price` with
+  `vo=0` for every real trading session from `effective_date` onward --
+  reusing the existing "padded rows use zero volume" convention (see
+  above) for a closed-out position instead of a missing trading session.
+
+Either way the result is schema-identical to `fetch_daily()`'s own output
+and materialized into the *original* ticker's rows via the normal
+`pandas2sqlite()` write path -- no downstream code (`to_pandas`,
+`sqlite2pandas`, raw SQL, DB Browser) needs to know an alias was involved,
+which was the explicit goal ("calling code doesn't need to know all the
+hairy detail, it just needs to see appropriate prices").
+
+**Reasoning for resolving at fetch time, not query time:** the alternative
+(a SQL view or read-time union) would need every existing read path taught
+about aliasing. Resolving once, at the point new data enters the system,
+and writing it under the original ticker keeps every other function
+(most of them written before aliasing existed) completely unchanged.
+
+**Reasoning for `effective_date` being a practical cutover, not necessarily
+the real corporate-action date:** GMGI.US is the case that needed this --
+the real rename was 2026-03-03, but EODHD kept serving (already
+split-adjusted) GMGI.US data through 2026-05-04, so `effective_date` is set
+to 2026-05-05 to use the real data as long as it's actually being served.
+The true event date/details belong in `reason` for human reference; only
+`effective_date` drives resolution.
+
+**Why volume isn't rescaled:** a split/merger's share-count change doesn't
+translate meaningfully into "old ticker's volume" (concretely: LBRDA's
+"volume" after the merger would require rescaling CHTR's real trading
+volume by `1/ratio`, which is meaningless -- CHTR's volume reflects CHTR's
+own much larger float, not a hypothetical LBRDA-equivalent one). Only price
+continuity was the stated goal, so only price columns are scaled.
+
+**How aliases get added:** manually, via `add_ticker_alias()`, the same way
+the five above were researched and added -- this isn't the kind of thing to
+auto-detect (no delisting-reason data from EODHD). Once added, resolution
+is automatic and retroactive-feeling without any backfill script: the next
+normal fetch through `tips()`/`to_pandas()` for that ticker just picks up
+the gap, since the fetch boundary itself is now alias-aware.
+
+**Effect on `unresolved_tips()`:** not superseded -- its role narrows. A
+tip it flags is now either a candidate needing alias research, or (once
+researched and no alias applies) a genuine unrecoverable loss. Once an
+alias is added and the next fetch runs, a previously-flagged tip's coverage
+completes and it stops appearing on its own -- no code change needed in
+`unresolved_tips()` itself, since it only ever measured coverage.
+
+Seeded 2026-09-30 with the five researched cases: GMGI.US->MRDN.US (1.0),
+FDP.US->DMC.US (1.0), VSCO.US->VSXY.US (1.0), FLGC.US->ZSTK.US (1.0),
+LBRDA.US->CHTR.US (0.236) -- see doc/DELISTING_RESEARCH_2026-09-30.md for
+the full research and the price-continuity verification for each.
 
 ---
 

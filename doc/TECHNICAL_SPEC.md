@@ -174,11 +174,35 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 - Tips whose backfill window has fully elapsed (`tip_date + n2*2+5` calendar
   days is in the past) but whose price coverage in `tablename` is still
   short of n2 days -- the closed counterpart to daily_update.py's
-  `_still_open_tips()`. Likely means the ticker was delisted/merged/halted
-  shortly after the tip.
+  `_still_open_tips()`. Usually means the ticker was renamed, split, or
+  merged (EODHD doesn't follow a ticker through those events) rather than
+  an actual loss -- see `ticker_aliases` below and
+  doc/DELISTING_RESEARCH_2026-09-30.md.
 - Returns (not drops) these tips: `code, tip_date, actual_days,
   last_available_date` -- see doc/DESIGN_DECISIONS.md on why this is
   surfaced rather than silently filtered (survivorship bias).
+
+### ticker_aliases: smoothing renamed / split / merged / cashed-out tickers
+
+**Table** `ticker_aliases`: `old_code TEXT, new_code TEXT, effective_date
+TEXT, ratio REAL DEFAULT 1.0, cash_price REAL, reason TEXT, PRIMARY KEY
+(old_code, effective_date)`. Exactly one of `new_code`/`cash_price` must be
+set (enforced by a CHECK constraint and in `add_ticker_alias()`).
+
+**add_ticker_alias(db, old_code, effective_date, new_code=None, ratio=1.0,
+cash_price=None, reason=None)**
+- Records that `old_code`'s series should, from `effective_date` onward,
+  resolve via `new_code` (price = `ratio * new_code`'s price) or a fixed
+  `cash_price` (cash-for-scrip takeover, no successor security).
+- `effective_date` is a practical cutover date (when fetching `old_code`
+  directly stops being useful), which can lag the real corporate-action
+  date if EODHD kept serving `old_code` for a while afterward -- record the
+  real date/details in `reason`.
+- Takes effect on the next fetch through `tips()`/`Database.fetch()`/
+  `Database.to_pandas()` -- no separate backfill step.
+- Seeded 2026-09-30 with 5 rows: GMGI.US->MRDN.US, FDP.US->DMC.US,
+  VSCO.US->VSXY.US, FLGC.US->ZSTK.US (all ratio 1.0), LBRDA.US->CHTR.US
+  (ratio 0.236).
 
 ### Database class
 
@@ -200,9 +224,16 @@ connection for its lifetime.
   today's data hasn't been published yet.
   n_days uses _start_from_actual_dates (not _n_sessions_before) so half-days
   are counted correctly.
+  Daily auto-fetches route through `_fetch_daily_resolved()` (ticker_aliases
+  resolution) rather than calling `fetch_daily()` directly.
 - `to_polars(tablename, **kwargs)` — delegates to to_pandas
 - `to_csv(tablename, csv_path, **kwargs)`
 - `fetch(code, interval, tablename, from_date=None, to_date=None)`
+  Daily fetches also route through `_fetch_daily_resolved()`, but only when
+  both from_date and to_date are given — ticker_aliases resolution needs
+  concrete dates to split at the alias boundary, so an open-ended fetch
+  (from_date/to_date omitted, EODHD's own default window) falls back to a
+  plain `fetch_daily()` call instead.
 - `_table_exists(tablename) -> bool`
 - `_date_range_in_table(tablename, code, is_daily) -> (date|None, date|None)`
 
@@ -218,6 +249,20 @@ connection for its lifetime.
   that exchange_calendars omits. Used in to_pandas() after fetch.
 **_interval_to_freq(interval) -> str**: "5m" → "5min", "1h" → "1h"
 **_is_intraday(interval) -> bool**: interval != "1d"
+**_lookup_alias(db, code) -> dict | None**: earliest `ticker_aliases` row
+  for `code`, or None. Returns None (not an error) if the table doesn't
+  exist yet.
+**_generate_cashout_rows(code, from_date, to_date, cash_price) -> pd.DataFrame**:
+  flat, zero-volume rows at `cash_price` for every real trading session in
+  range — the cash-for-scrip branch of alias resolution.
+**_fetch_daily_resolved(db, code, api_token, from_date, to_date) -> pd.DataFrame**:
+  `fetch_daily()`, but splits the requested range at any applicable
+  `ticker_aliases` boundary and resolves the post-boundary segment via
+  `new_code` (price-scaled by `ratio`, recursing for chained renames) or
+  `_generate_cashout_rows()`. Always returns a DataFrame labelled `code`
+  throughout, schema-identical to `fetch_daily()`'s own output. Daily only
+  — no intraday equivalent (not needed by any current caller). Volume is
+  not rescaled across an alias boundary.
 
 ### Known limitations / gaps
 

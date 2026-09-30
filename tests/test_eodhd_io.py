@@ -12,8 +12,10 @@ from src.eodhd_io import (
     DAILY_CSV_COLUMNS,
     Database,
     _eodhd_fetch_csv,
+    _fetch_daily_resolved,
     _TransientEodhdResponse,
     add_local_time,
+    add_ticker_alias,
     csv2pandas_daily,
     csv2pandas_intraday,
     fetch_daily,
@@ -366,6 +368,97 @@ def test_unresolved_tips_flags_closed_short_windows_only(tmp_path):
     zero = result[result["code"] == "ZERO.US"].iloc[0]
     assert zero["actual_days"] == 0
     assert zero["last_available_date"] is None
+
+
+# --- Tests for ticker_aliases / add_ticker_alias() / _fetch_daily_resolved() ---
+def _daily_row(code, d, price, vo=100):
+    return pd.DataFrame({
+        "code": [code], "timestamp": [0], "datetime": [pd.Timestamp(d)],
+        "date": [d], "op": [price], "hi": [price], "lo": [price], "cl": [price],
+        "ac": [price], "vo": [vo],
+    })
+
+def test_add_ticker_alias_requires_exactly_one_target(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        with pytest.raises(ValueError, match="Exactly one"):
+            add_ticker_alias(db, "OLD.US", date(2026, 1, 1))  # neither given
+        with pytest.raises(ValueError, match="Exactly one"):
+            add_ticker_alias(
+                db, "OLD.US", date(2026, 1, 1), new_code="NEW.US", cash_price=5.0
+            )  # both given
+
+@mock.patch("src.eodhd_io.fetch_daily")
+def test_fetch_daily_resolved_no_alias_is_a_passthrough(mock_fetch_daily, tmp_path):
+    mock_fetch_daily.return_value = _daily_row("X.US", date(2026, 1, 1), 10.0)
+    with Database(tmp_path / "test.db") as db:
+        result = _fetch_daily_resolved(db, "X.US", "tok", date(2026, 1, 1), date(2026, 1, 5))
+
+    mock_fetch_daily.assert_called_once_with(
+        "X.US", "tok", from_date=date(2026, 1, 1), to_date=date(2026, 1, 5)
+    )
+    assert list(result["code"]) == ["X.US"]
+
+@mock.patch("src.eodhd_io.fetch_daily")
+def test_fetch_daily_resolved_splices_renamed_ticker_with_ratio(mock_fetch_daily, tmp_path):
+    """A rename/split (OLD.US -> NEW.US, ratio 0.2) should return one
+    continuous series labelled OLD.US throughout, with post-alias prices
+    scaled by ratio and volume left untouched (not meaningfully comparable
+    across the split)."""
+    def fake_fetch(code, api_token, from_date=None, to_date=None):
+        if code == "OLD.US":
+            return _daily_row("OLD.US", date(2026, 1, 5), 10.0, vo=100)
+        if code == "NEW.US":
+            return _daily_row("NEW.US", date(2026, 1, 10), 50.0, vo=200)
+        raise AssertionError(f"unexpected code {code}")
+    mock_fetch_daily.side_effect = fake_fetch
+
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(
+            db, "OLD.US", date(2026, 1, 8), new_code="NEW.US", ratio=0.2, reason="test rename"
+        )
+        result = _fetch_daily_resolved(db, "OLD.US", "tok", date(2026, 1, 1), date(2026, 1, 15))
+
+    calls = mock_fetch_daily.call_args_list
+    assert len(calls) == 2
+    assert calls[0].args[0] == "OLD.US"
+    assert calls[0].kwargs == {"from_date": date(2026, 1, 1), "to_date": date(2026, 1, 7)}
+    assert calls[1].args[0] == "NEW.US"
+    assert calls[1].kwargs == {"from_date": date(2026, 1, 8), "to_date": date(2026, 1, 15)}
+
+    assert list(result["code"]) == ["OLD.US", "OLD.US"]
+    assert list(result["date"]) == [date(2026, 1, 5), date(2026, 1, 10)]
+    assert result.iloc[0]["cl"] == 10.0  # pre-alias: untouched
+    assert result.iloc[1]["cl"] == pytest.approx(10.0)  # post-alias: 0.2 * 50.0
+    assert result.iloc[1]["vo"] == 200  # volume NOT rescaled
+
+@mock.patch("src.eodhd_io.fetch_daily")
+@mock.patch("src.eodhd_io._get_calendar")
+def test_fetch_daily_resolved_cash_out(mock_get_calendar, mock_fetch_daily, tmp_path):
+    """A pure cash-for-scrip takeover (no new_code) should pad flat,
+    zero-volume rows at cash_price for every real session from
+    effective_date onward -- same convention as ordinary missing-session
+    padding."""
+    mock_fetch_daily.return_value = _daily_row("OLD.US", date(2026, 1, 5), 10.0)
+
+    sessions = pd.DatetimeIndex([pd.Timestamp("2026-01-08"), pd.Timestamp("2026-01-09")])
+    schedule = pd.DataFrame(
+        {"open": [pd.Timestamp("2026-01-08 09:30:00"), pd.Timestamp("2026-01-09 09:30:00")]},
+        index=sessions,
+    )
+    mock_cal = mock.MagicMock()
+    mock_cal.sessions_in_range.return_value = sessions
+    mock_cal.schedule = schedule
+    mock_get_calendar.return_value = mock_cal
+
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "OLD.US", date(2026, 1, 8), cash_price=42.0, reason="test cash-out")
+        result = _fetch_daily_resolved(db, "OLD.US", "tok", date(2026, 1, 1), date(2026, 1, 9))
+
+    assert list(result["date"]) == [date(2026, 1, 5), date(2026, 1, 8), date(2026, 1, 9)]
+    assert result.iloc[0]["cl"] == 10.0
+    for i in (1, 2):
+        assert result.iloc[i]["cl"] == 42.0
+        assert result.iloc[i]["vo"] == 0
 
 # --- Hypothesis Test ---
 # CHANGED: the @given(...) strategy below used to be attached to a
