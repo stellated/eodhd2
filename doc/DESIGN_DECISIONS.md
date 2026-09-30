@@ -473,16 +473,30 @@ database is even involved.
 **Decision:** a `--all-emails` flag on `daily_update.py`, forwarded through
 `run_daily_update.sh`'s new passthrough (`run_daily_update.sh <mode>
 [extra args]`, everything after `<mode>` passed straight to
-`daily_update.py`). When set, `unseen_only=False`: always re-searches and
-re-parses every matching email regardless of `\Seen` state, decoupling that
-consumer entirely from whatever the other machine has already claimed.
+`daily_update.py`). When set, it sets **both** `unseen_only=False` (search
+everything, not just mail unseen by this machine) **and** the new
+`mark_seen=False` (never flip `\Seen` on anything it downloads).
+
+**Correction during implementation:** the first cut of this only set
+`unseen_only=False` and missed that `download_emails()` marks `\Seen`
+*unconditionally* on every downloaded email, regardless of `unseen_only` --
+that flag only controls what gets searched for, not what gets marked
+afterward. A Mac running only `unseen_only=False` would still steal
+genuinely-new mail out from under `mars`: if the Mac happened to run first
+on a given day, it would download and mark Seen a tip email `mars` hadn't
+processed yet, and `mars`'s own `unseen_only=True` search would then find
+nothing -- permanently, since (unlike the price-data backfill) there's no
+mechanism to recover a tip that was never parsed into `tip_details` in the
+first place. `mark_seen` (new, independent parameter on
+`download_emails()`, default `True`) closes this: a secondary consumer
+needs to never touch the shared Seen state at all, not just search past it.
 
 **Reasoning:** re-parsing the full matching history every run is slower
 (re-downloads emails already seen) but `tips_exchange2sqlite`'s `INSERT OR
 REPLACE` makes it harmless/idempotent, and it was the simplest fix that
 didn't require a second mailbox/forwarding setup. `mars`'s own scheduled
-runs are unaffected -- the flag defaults off, so `unseen_only=True` there,
-unchanged.
+runs are unaffected -- the flag defaults off, so `unseen_only=True` and
+`mark_seen=True` there, unchanged.
 
 ---
 

@@ -31,14 +31,16 @@ day:
 Which mode runs which day is entirely a scheduling decision, made in ops/
 (three separate systemd timers), not in this script.
 
---all-emails: download_emails()'s unseen_only marks each email \\Seen on the
-IMAP server itself -- shared state, not per-machine. If a second machine
-(e.g. a Mac running this manually against the same mailbox, for an
-independent comparison db) also wants every tip email regardless of which
-machine already claimed it, pass --all-emails to always re-search and
-re-parse every matching email (idempotent via INSERT OR REPLACE either way).
-See doc/DESIGN_DECISIONS.md ("--all-emails for a second independent
-consumer of the same mailbox").
+--all-emails: for a second, independent consumer of the same mailbox (e.g. a
+Mac running this manually alongside mars's scheduled runs, for an
+independent comparison db). \\Seen is shared IMAP-server state, not
+per-machine, so this sets BOTH unseen_only=False (search everything, not
+just what this machine personally left unread) AND mark_seen=False (never
+flip \\Seen -- leave that to mars, the canonical consumer, so it isn't
+robbed of "is this new" detection for mail this machine downloads first).
+Re-parsing everything every run is slower but harmless: INSERT OR REPLACE
+makes it idempotent. See doc/DESIGN_DECISIONS.md ("--all-emails for a
+second independent consumer of the same mailbox").
 """
 import argparse
 import logging
@@ -154,10 +156,11 @@ def main() -> None:
     parser.add_argument(
         "--all-emails",
         action="store_true",
-        help="Ignore IMAP \\Seen state: re-search and re-parse every "
-             "matching email, not just ones unseen by this mailbox. For a "
-             "second independent consumer of the same mailbox (see module "
-             "docstring) -- leave unset for the normal unseen_only run.",
+        help="For a second independent consumer of the same mailbox (see "
+             "module docstring): re-search/re-parse every matching email "
+             "AND never mark one \\Seen, so this run never interferes with "
+             "the other consumer's unseen-mail detection either. Leave "
+             "unset for the normal unseen_only, mark-as-read run.",
     )
     args = parser.parse_args()
 
@@ -171,6 +174,7 @@ def main() -> None:
         target_folder=args.eml_dir,
         sender_email=SENDER_EMAIL,
         unseen_only=not args.all_emails,
+        mark_seen=not args.all_emails,
     )
 
     eml_files = sorted(args.eml_dir.glob("*.eml"))

@@ -36,7 +36,8 @@ def download_emails(imap_server,
                     write=True,
                     n=None,
                     next_n=None,
-                    unseen_only=False):
+                    unseen_only=False,
+                    mark_seen=True):
     # Connect to the IMAP server
     mail = imaplib.IMAP4_SSL(imap_server)
     mail.login(username, password)
@@ -45,11 +46,21 @@ def download_emails(imap_server,
 
     # Search for emails from the specified sender. unseen_only=True is for
     # unattended/scheduled runs against a scratch mailbox: combined with the
-    # \\Seen flag this function already sets below, it means each run only
-    # re-processes emails that arrived since the last successful run, instead
-    # of re-downloading the whole mailbox history every time (relevant when
-    # the caller has no local record of what it already saw, e.g. a stateless
-    # VM that doesn't keep previously-downloaded .eml files around).
+    # \\Seen flag this function sets below (when mark_seen=True), it means
+    # each run only re-processes emails that arrived since the last
+    # successful run, instead of re-downloading the whole mailbox history
+    # every time (relevant when the caller has no local record of what it
+    # already saw, e.g. a stateless VM that doesn't keep previously-
+    # downloaded .eml files around).
+    #
+    # \\Seen is shared IMAP-server state, not per-caller: mark_seen and
+    # unseen_only are independent knobs, but a second, independent consumer
+    # of the same mailbox (not just the same unattended scratch VM) needs
+    # BOTH unseen_only=False (see everything, not just what it personally
+    # left unread) AND mark_seen=False (don't consume what the *other*
+    # consumer still needs to see as unread) -- setting only the former
+    # still lets it silently steal new mail out from under the other
+    # consumer by marking it Seen.
     search_criteria = f'(FROM "{sender_email}")'
     if unseen_only:
         search_criteria = f'(FROM "{sender_email}" UNSEEN)'
@@ -109,8 +120,8 @@ def download_emails(imap_server,
             with open(filepath, "wb") as f:
                 f.write(msg_data[0][1])
             print(f"\tsaving {filename} to {trim_dir(target_folder)}")
-            # Mark as read
-            mail.store(email_id, "+FLAGS", "\\Seen")
+            if mark_seen:
+                mail.store(email_id, "+FLAGS", "\\Seen")
             new_download_count += 1
         else:
             print(f"not downloading: {filename} to _{trim_dir(target_folder)} because write=False")
