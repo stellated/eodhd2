@@ -15,6 +15,12 @@ re-requests price windows for any recent tip that might still be missing
 post-tip-date days, not just ones parsed from today's new email -- see
 _still_open_tips() and doc/DESIGN_DECISIONS.md ("daily_update.py re-requests
 still-open tips").
+
+Every run also logs unresolved_tips() -- tips whose backfill window has
+closed but price coverage is still short, usually meaning EODHD stopped
+following a ticker through a rename/split/merger and a ticker_aliases entry
+is needed -- see _log_unresolved_tips() and doc/DESIGN_DECISIONS.md
+("ticker_aliases: smoothing renamed / split / merged / cashed-out tickers").
 """
 import argparse
 import logging
@@ -30,7 +36,7 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from email_downloader import download_emails  # noqa: E402
-from eodhd_io import DEFAULT_N2, Database, tips  # noqa: E402
+from eodhd_io import DEFAULT_N2, Database, tips, unresolved_tips  # noqa: E402
 from tips_io import parse_tip_emails, tips_exchange2sqlite  # noqa: E402
 
 SENDER_EMAIL = "reports@stockdataanalytics.com"
@@ -65,6 +71,46 @@ def _still_open_tips(
     except sqlite3.OperationalError:
         return []  # tip_details doesn't exist yet (e.g. very first run)
     return [(code, date.fromisoformat(tip_date)) for code, tip_date in rows]
+
+
+def _all_tips(db: Database, tablename: str) -> list[tuple[str, date]]:
+    """All (code, tip_date) pairs ever recorded. Unlike _still_open_tips()
+    (recent tips still inside their backfill window), unresolved_tips()
+    needs the full history -- it specifically checks tips whose window has
+    already closed, which _still_open_tips() would filter out.
+    """
+    try:
+        rows = db.conn.execute(
+            f"SELECT DISTINCT code, tip_date FROM {tablename} WHERE code IS NOT NULL"  # noqa: S608
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [(code, date.fromisoformat(tip_date)) for code, tip_date in rows]
+
+
+def _log_unresolved_tips(db: Database) -> None:
+    """Surface tips whose backfill window has closed but price coverage is
+    still short -- usually means a ticker_aliases entry is needed (see
+    doc/DESIGN_DECISIONS.md, "ticker_aliases: smoothing renamed / split /
+    merged / cashed-out tickers"). Checked every run so this shows up in
+    the log on its own, rather than needing someone to remember to run
+    unresolved_tips() manually.
+    """
+    all_tips = _all_tips(db, TIPS_TABLENAME)
+    problems = unresolved_tips(db, all_tips, PRICE_TABLENAME, PRICE_INTERVAL)
+    if problems.empty:
+        log.info("no unresolved tips")
+        return
+    log.warning(
+        "%d unresolved tip(s) -- window closed but price coverage still short, "
+        "likely needs a ticker_aliases entry (see doc/DESIGN_DECISIONS.md): %s",
+        len(problems),
+        "; ".join(
+            f"{row.code} (tip {row.tip_date}, {row.actual_days}d, "
+            f"last={row.last_available_date})"
+            for row in problems.itertuples()
+        ),
+    )
 
 
 def main() -> None:
@@ -108,12 +154,13 @@ def main() -> None:
         # a failure (see doc/DESIGN_DECISIONS.md).
         tip_list = sorted(set(new_tips) | set(open_tips), key=lambda t: (t[1], t[0]))
 
-        if not tip_list:
+        if tip_list:
+            tips(db, tip_list, PRICE_TABLENAME, PRICE_INTERVAL)
+            log.info("fetched price windows for %d tip(s)", len(tip_list))
+        else:
             log.info("no tips (new or still-open) to fetch price windows for")
-            return
 
-        tips(db, tip_list, PRICE_TABLENAME, PRICE_INTERVAL)
-        log.info("fetched price windows for %d tip(s)", len(tip_list))
+        _log_unresolved_tips(db)
 
 
 if __name__ == "__main__":

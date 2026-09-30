@@ -402,7 +402,18 @@ Each run:
    The union is sorted by `(tip_date, code)` before use -- a plain `set`'s
    iteration order is hash-based and scrambles from run to run, which makes
    the log (and diagnosing a failure from it) much harder to follow.
-4. Calls `tips()` once with the sorted list.
+4. Calls `tips()` once with the sorted list (if non-empty; logs and skips
+   otherwise).
+5. Calls `_log_unresolved_tips(db)`: builds the *full* tip history via
+   `_all_tips()` (unlike `_still_open_tips()`, this is not cutoff-filtered
+   -- `unresolved_tips()` specifically needs tips whose window has already
+   closed) and calls `eodhd_io.unresolved_tips()` against it. Logs a
+   `WARNING` listing every flagged tip (code, tip_date, actual_days,
+   last_available_date) if any, else an `INFO` "no unresolved tips" line.
+   Runs every time, regardless of whether step 4 had anything to do, so
+   this surfaces on its own rather than needing someone to remember to run
+   `unresolved_tips()` manually. See `doc/DESIGN_DECISIONS.md`
+   ("ticker_aliases...") for what to do with a flagged tip.
 
 This backfill step exists because the newsletter arrives before US market
 open: the first time a brand-new tip is seen, `tips()` can only fetch the n1

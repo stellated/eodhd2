@@ -389,6 +389,19 @@ is automatic and retroactive-feeling without any backfill script: the next
 normal fetch through `tips()`/`to_pandas()` for that ticker just picks up
 the gap, since the fetch boundary itself is now alias-aware.
 
+**Discovery is automatic even though fixing isn't (2026-09-30):**
+`daily_update.py` calls `_log_unresolved_tips()` at the end of every run
+(against the *full* tip history via `_all_tips()`, not just recent tips --
+`unresolved_tips()` needs tips whose window has already closed, which
+`_still_open_tips()` deliberately excludes), logging a `WARNING` listing
+anything still flagged. Before this, the five tickers above were only
+found because Ian happened to notice something odd in the log and asked
+about it -- there was no mechanism that would have surfaced them on its
+own. A genuine, confirmed total loss (real bankruptcy, no successor, no
+payout) can also be recorded via `add_ticker_alias(..., cash_price=0.0,
+reason="confirmed bankruptcy")` so it stops being re-flagged every run
+once it's been researched and decided, the same as any other alias.
+
 **Effect on `unresolved_tips()`:** not superseded -- its role narrows. A
 tip it flags is now either a candidate needing alias research, or (once
 researched and no alias applies) a genuine unrecoverable loss. Once an

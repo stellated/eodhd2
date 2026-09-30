@@ -477,10 +477,15 @@ _nonneg_int = st.integers(min_value=0, max_value=2**31 - 1)
 _nonneg_float = st.floats(min_value=0, allow_nan=False, allow_infinity=False)
 
 
-# too_slow suppressed: fails on constrained hardware (e.g. a low-CPU VM)
-# where drawing a DataFrame example legitimately takes >0.1s -- not a sign
-# of a bad strategy.
-@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
+# too_slow suppressed and deadline disabled: fails on constrained hardware
+# (e.g. a low-CPU VM under concurrent load) where drawing/running a single
+# example can legitimately take >200ms -- not a sign of a bad strategy or a
+# real performance regression (observed: passes reliably in isolation,
+# only flakes when the suite runs concurrently with other load on a
+# 1-core VM).
+@settings(
+    max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow]
+)
 @given(
     df=data_frames(
         columns=[
