@@ -177,6 +177,35 @@ exchange_calendars sessions.
 compute start, half-days are not counted and the user gets fewer rows than
 requested. Counting actual table dates means half-days count naturally.
 
+### to_pandas() without code silently returned zero rows (2026-10-05)
+**Problem:** `to_pandas()`/`to_polars()` always built `WHERE code = ?` with
+`params=[code]`, even when `code` wasn't passed (it's documented as only
+required for the auto-fetch branch, not for a plain read). SQL's `x = NULL`
+never matches, so any code-less call -- e.g. `to_polars(tablename)` to read
+or diff a whole table, exactly what `scripts/compare_db.py` needed to do --
+silently returned an empty DataFrame. No error, just nothing, which is a
+much worse failure mode than a loud one: it looks like "no data" rather
+than "wrong query." Found via Ian's own db-comparison script reporting zero
+rows against tables that genuinely had 30k+ rows each.
+
+A second, dormant bug lived in the same block: `date_col` defaulted to
+`"local_date"` (the intraday column) whenever `interval` wasn't passed --
+untriggered only because the code-less calls that hit this also happened
+to omit `start`/`end`. `doc/TECHNICAL_SPEC.md`'s "Known limitations" used
+to claim this was already handled via `PRAGMA table_info` -- it wasn't;
+that described `sqlite2pandas()`'s behavior, a different function, not
+`to_pandas()`'s.
+
+**Decision:** the `code` filter is now applied only when `code` is given,
+and `date_col` is derived from the table's actual schema (`PRAGMA
+table_info`) instead of trusted from `interval` -- matching the detection
+`sqlite2pandas()` already did correctly. Both now behave correctly
+independent of which of `code`/`interval`/`start`/`end` are supplied.
+
+**Reasoning:** `to_pandas(tablename)` with no other args is a reasonable,
+already-documented call shape (reading/diffing a whole table), and should
+not require a dummy `code` just to avoid a silent empty result.
+
 ---
 
 ## tips() design

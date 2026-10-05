@@ -226,6 +226,11 @@ connection for its lifetime.
   are counted correctly.
   Daily auto-fetches route through `_fetch_daily_resolved()` (ticker_aliases
   resolution) rather than calling `fetch_daily()` directly.
+  code/start/end are all independently optional for a plain (non-fetching)
+  read: `to_pandas(tablename)` with no other args returns the whole table.
+  date_col (`date` vs `local_date`, needed when start/end are given) is
+  detected from the table's actual schema via `PRAGMA table_info`, not from
+  `interval` — correct even when `interval` itself wasn't passed.
 - `to_polars(tablename, **kwargs)` — delegates to to_pandas
 - `to_csv(tablename, csv_path, **kwargs)`
 - `fetch(code, interval, tablename, from_date=None, to_date=None)`
@@ -285,10 +290,6 @@ connection for its lifetime.
 
 4. **Only .US suffix tips**: tips_io.py appends ".US" to all tickers. The
    tipping service (StockDataAnalytics) only covers US stocks.
-
-5. **Exchange suffix validation in to_pandas()**: The date_col detection uses
-   PRAGMA table_info rather than the interval parameter. This means if
-   interval is not passed, the correct date column is still detected.
 
 ---
 
