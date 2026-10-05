@@ -1367,20 +1367,33 @@ class Database:
                 n,
             )
 
-        # Now fetch the requested range from the database
-        date_col = "date" if is_daily else "local_date"
-        query = f"SELECT * FROM {tablename} WHERE code = ?"
-        params = [code]
+        # Now fetch the requested range from the database. date_col is
+        # derived from the table's actual schema, not `interval` (which may
+        # be None here -- `code`/`interval` are only required for the
+        # auto-fetch branch above, not for a plain read), so e.g. a bare
+        # to_pandas("daily") works correctly instead of silently defaulting
+        # to the intraday column name. Likewise, the `code` filter is only
+        # applied when `code` is actually given -- `WHERE code = ?` bound to
+        # None matches nothing in SQL, which previously made any code-less
+        # call (reading a whole table, as when diffing two db snapshots)
+        # silently return zero rows.
+        table_cols = {row[1] for row in self.conn.execute(f"PRAGMA table_info({tablename})")}
+        date_col = "date" if "date" in table_cols else "local_date"
+        query = f"SELECT * FROM {tablename}"
+        params = []
+        conditions = []
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
         if start:
-            query += f" AND {date_col} >= ?"
+            conditions.append(f"{date_col} >= ?")
             params.append(start.isoformat())
         if end:
-            query += f" AND {date_col} <= ?"
+            conditions.append(f"{date_col} <= ?")
             params.append(end.isoformat())
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         pdf = pd.read_sql(query, self.conn, params=params)
-        print('pdf inside to_pandas') # debug
-        print(pdf.head(5)) # debug
-        print() # debug
 
         # Restore types
         pdf["datetime"] = pd.to_datetime(pdf["datetime"]).astype("datetime64[us]")
