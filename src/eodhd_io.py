@@ -1378,6 +1378,9 @@ class Database:
             query += f" AND {date_col} <= ?"
             params.append(end.isoformat())
         pdf = pd.read_sql(query, self.conn, params=params)
+        print('pdf inside to_pandas') # debug
+        print(pdf.head(5)) # debug
+        print() # debug
 
         # Restore types
         pdf["datetime"] = pd.to_datetime(pdf["datetime"]).astype("datetime64[us]")
