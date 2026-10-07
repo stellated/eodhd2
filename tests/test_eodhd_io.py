@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 import pandas as pd
@@ -113,6 +113,13 @@ def test_csv2pandas_intraday_gmtoffset_warning(modified_intraday_csv, caplog):
     with caplog.at_level(30):
         csv2pandas_intraday("AAPL.US", modified_intraday_csv, "5m")
         assert "Non-zero Gmtoffset detected" in caplog.text
+
+def test_csv2pandas_intraday_has_no_local_time(sample_intraday_csv):
+    """local_time is only ever added deliberately, via add_local_time() --
+    csv2pandas_intraday() must not include it (it briefly did, by accident;
+    see doc/DESIGN_DECISIONS.md, "local_time only ever added deliberately")."""
+    pdf = csv2pandas_intraday("AAPL.US", sample_intraday_csv, "5m")
+    assert "local_time" not in pdf.columns
 
 # --- Tests for pandas/polars round-trip ---
 def test_pandas_polars_roundtrip():
@@ -314,6 +321,39 @@ def test_tips_skips_failing_tip_and_continues(
 
     assert list(pdf["code"]) == ["GOOD.US"]
     assert any("BAD.US" in rec.message for rec in caplog.records)
+
+
+@mock.patch("src.eodhd_io.fetch_intraday")
+@mock.patch("src.eodhd_io._get_calendar")
+def test_tips_intraday_writes_local_time(mock_get_calendar, mock_fetch_intraday, tmp_path):
+    """fetch_intraday()/csv2pandas_intraday() deliberately don't include
+    local_time (see doc/DESIGN_DECISIONS.md, "local_time only ever added
+    deliberately") -- tips() must add it itself before writing, since this
+    is the one place intraday data actually lands in the db."""
+    mock_get_calendar.return_value = mock.MagicMock()  # unused: n1=0 short-circuits it
+    tip_date = date(2026, 9, 1)
+    # Explicit UTC instant (not pd.Timestamp(date).timestamp(), which is
+    # ambiguous between naive-local and UTC) -- 13:30 UTC = 09:30 EDT, so
+    # the expected local_time below is exact, not system-timezone-dependent.
+    ts = int(datetime(2026, 9, 1, 13, 30, tzinfo=timezone.utc).timestamp())
+
+    def fake_fetch_intraday(code, api_token, interval, from_ts=None, to_ts=None):
+        return pd.DataFrame({
+            "code": [code],
+            "timestamp": [ts],
+            "datetime": [pd.Timestamp(tip_date)],
+            "local_date": [tip_date],
+            "op": [100.0], "hi": [101.0], "lo": [99.0], "cl": [100.5],
+            "vo": [1000],
+        })
+
+    mock_fetch_intraday.side_effect = fake_fetch_intraday
+
+    with Database(tmp_path / "test.db", api_token="fake_token") as db:
+        tips(db, [("GOOD.US", tip_date)], "intraday_5m", "5m", n1=0, n2=0)
+        pdf = pd.read_sql("SELECT code, local_time FROM intraday_5m", db.conn)
+
+    assert list(pdf["local_time"]) == ["09:30:00"]
 
 
 # --- Tests for unresolved_tips() ---

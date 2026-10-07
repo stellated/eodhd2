@@ -105,6 +105,44 @@ the extra column. The function is separate so it can be applied selectively.
 suffix. Mixed-exchange DataFrames must be split, processed, and recombined.
 This is documented as the intended workflow, not a bug.
 
+### local_time only ever added deliberately (2026-10-06)
+**Problem:** despite the decision above, `csv2pandas_intraday()` had
+accidentally grown its own `local_time` computation (in both the raw-data
+step and the per-day padding grid) -- one of the two was entirely dead code
+(computed, never read), but the other *was* selected into the function's
+returned columns, contradicting its own docstring and
+`doc/TECHNICAL_SPEC.md`. In practice every real intraday write went through
+`tips()` -> `fetch_intraday()` -> this function, so the production
+`intraday_5m` table (populated starting 2026-10-04, the first Sunday
+`intraday-price` run) ended up with `local_time` anyway -- as an accidental
+side effect, not the deliberate `add_local_time()` call the design above
+describes.
+
+Found via a dtype/schema discussion with Ian about how `tip_details`,
+`daily`, and `intraday_5m`'s date/time columns map into polars.
+
+**Decision:** removed both computations from `csv2pandas_intraday()` --
+it now matches its own docstring exactly (no `local_time`). Added an
+explicit `add_local_time()` call inside `tips()`'s intraday branch, right
+after `fetch_intraday()`, so `intraday_5m` keeps getting `local_time`
+going forward, deliberately rather than accidentally.
+
+**Why this matters more than it looks:** simply deleting the accidental
+computation without re-adding it elsewhere would NOT just stop future rows
+from getting `local_time` -- `pandas2sqlite()`'s `INSERT OR REPLACE`
+replaces the *entire* row, built from whatever columns the incoming
+DataFrame currently has. Any later idempotent re-fetch of an
+already-stored row (routine in this backfill-heavy pipeline) would have
+silently nulled out that row's existing `local_time`, not merely left new
+rows without it. Re-adding it explicitly in `tips()` avoids this.
+
+**Why in `tips()`, not in `fetch_intraday()`:** keeps `fetch_intraday()`'s
+documented contract ("same schema as csv2pandas_intraday()") exactly true,
+and keeps the "local_time is optional, added deliberately" design intact
+for any other/future caller of `fetch_intraday()` that might not want it.
+`tips()` is the one place intraday data is actually written to the db, so
+it's the right place to opt in.
+
 ---
 
 ## Exchange and timezone handling

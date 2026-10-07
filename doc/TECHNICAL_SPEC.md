@@ -168,6 +168,12 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 - Requires db.api_token to be set
 - A per-tip fetch/store failure is logged (with a memory/disk snapshot via
   `_resource_snapshot()`) and skipped rather than aborting the whole call
+- For intraday fetches, calls `add_local_time()` on the result before
+  trimming/storing -- `fetch_intraday()`/`csv2pandas_intraday()`
+  deliberately don't include `local_time` themselves (see
+  `doc/DESIGN_DECISIONS.md`, "local_time is optional"), so `tips()` is
+  where it's added deliberately, since it's the one place intraday data
+  actually gets written to the db
 
 **unresolved_tips(db, tip_list, tablename, interval="1d", n1=None, n2=None)
 -> pd.DataFrame**

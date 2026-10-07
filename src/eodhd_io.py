@@ -384,10 +384,6 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
         pd.to_datetime(raw["timestamp"], unit="s", utc=True)
         .dt.tz_convert(str(tz)).dt.date
     )
-    raw["local_time"] = (
-        pd.to_datetime(raw["timestamp"], unit="s", utc=True)
-        .dt.tz_convert(str(tz)).dt.time
-    )
     raw = raw.drop(columns=["Timestamp", "Gmtoffset", "Datetime"])
 
     freq_seconds = int(pd.tseries.frequencies.to_offset(freq).nanos // 10**9)
@@ -403,7 +399,6 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
             "datetime": pd.to_datetime(slot_ts, unit="s", utc=True)
                 .tz_localize(None).astype("datetime64[us]"),
             "local_date": day,
-            "local_time": pd.to_datetime(slot_ts, unit="s", utc=True).tz_convert(str(tz)).time,
         })
         merged = grid.merge(
             day_df[["timestamp", "op", "hi", "lo", "cl", "vo"]], on="timestamp", how="left"
@@ -415,13 +410,10 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
 
     result = pd.concat(padded_frames, ignore_index=True)
     result["code"] = code
-    cols = [
-        "code", "timestamp", "datetime", "local_date", "local_time",
-        "op", "hi", "lo", "cl", "vo",
-    ]
+    cols = ["code", "timestamp", "datetime", "local_date", "op", "hi", "lo", "cl", "vo"]
     rval = result[cols].reset_index(drop=True)
-    # code timestamp datetime local_date local_time op hi lo cl vo
-    # AAPL.US, <big int>, yyyy-mm-dd hh:mm:ss, yyyy-mm-dd, hh:mm:ss, ...
+    # code timestamp datetime local_date op hi lo cl vo
+    # AAPL.US, <big int>, yyyy-mm-dd hh:mm:ss, yyyy-mm-dd, ...
     return rval
 
 
@@ -987,6 +979,14 @@ def tips(
                     datetime(cal_end.year, cal_end.month, cal_end.day, 23, 59, 59).timestamp()
                 ) + 86400
                 pdf = fetch_intraday(code, db.api_token, interval, from_ts=from_ts, to_ts=to_ts)
+                # Intentionally added here (not by fetch_intraday()/
+                # csv2pandas_intraday(), which deliberately omit it -- see
+                # doc/DESIGN_DECISIONS.md, "local_time is optional"): this is
+                # the one place intraday data actually gets written to the
+                # db, and local_time is a worthwhile DB Browser convenience
+                # there. Single code per call, so the single-exchange-suffix
+                # requirement is trivially satisfied.
+                pdf = add_local_time(pdf)
                 # Trim: keep cal_start through the nth actual trading date after tip
                 actual_after = sorted(d for d in pdf["local_date"].unique() if d >= tip_date)
                 end_date = actual_after[n2] if len(actual_after) > n2 else (
