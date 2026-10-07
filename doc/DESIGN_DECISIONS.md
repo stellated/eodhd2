@@ -143,6 +143,41 @@ for any other/future caller of `fetch_intraday()` that might not want it.
 `tips()` is the one place intraday data is actually written to the db, so
 it's the right place to opt in.
 
+### local_time gets a real Time type (2026-10-06)
+**Problem:** `local_time` was `pl.Utf8` (plain text) in Polars, despite
+representing a time value -- `pandas2polars()` never converted it, just
+passed the "HH:MM:SS" string through unchanged. Found during the same
+dtype/schema discussion that surfaced the previous decision above. Anyone
+doing real time comparisons/arithmetic against it (not just display) would
+need to parse it themselves every time, with no guarantee of doing so
+consistently.
+
+**Decision:** `pandas2polars()` now parses `local_time` into `pl.Time` via
+`.str.to_time("%H:%M:%S")`. `polars2pandas()` needed no corresponding
+change -- Polars' own `to_pandas()` already converts a `pl.Time` column to
+plain Python `datetime.time` objects automatically, which
+`pandas2sqlite()` already knew how to write (its `isinstance(lt, time)`
+check predates this fix).
+
+**A related bug surfaced while verifying the round-trip:** `pandas2sqlite()`
+converted anything that wasn't a `datetime.time` via `str(lt)` -- which
+turned a `None` value into the literal string `"None"` rather than SQL
+`NULL`. Fixed to map `None` to `None` explicitly. In practice this is now a
+loud `sqlite3.IntegrityError` (`local_time` is `TEXT NOT NULL` in the
+intraday DDL) instead of silent data corruption -- a real improvement,
+even though it means a genuinely-null `local_time` can no longer be
+written at all. `add_local_time()` (the only thing that populates it in
+the real pipeline) always produces a value for every row, so this isn't
+expected to come up in practice; it's defense against a value constructed
+some other way.
+
+**Reasoning:** `local_time` is documented as "a display convenience" (see
+"local_time is optional" above), but a convenience column with the wrong
+Polars type is still a footgun for any caller who assumes it behaves like
+the time value it represents. Fixing the type costs nothing downstream --
+`add_local_time()`, `pandas2sqlite()`, and SQLite's own TEXT storage are
+all unaffected -- so there was no reason to leave it as text once noticed.
+
 ---
 
 ## Exchange and timezone handling

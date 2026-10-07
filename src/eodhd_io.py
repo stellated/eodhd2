@@ -467,7 +467,7 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
     """Convert a tidy pandas DataFrame (daily or intraday) to polars.
     datetime -> pl.Datetime("us")
     date/local_date -> pl.Date
-    local_time -> pl.Utf8 (if present)
+    local_time -> pl.Time (if present), parsed from its "HH:MM:SS" string
     """
     if any(col in pdf.columns for col in ['date', 'local_date']):
         # "date" implies daily data,
@@ -486,6 +486,8 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
             pl.col("timestamp").cast(pl.Int64),
             pl.col("vo").cast(pl.Int64),
         ])
+        if "local_time" in df.columns:
+            df = df.with_columns(pl.col("local_time").str.to_time("%H:%M:%S"))
     else:
         df = pl.from_pandas(pdf)
     return df
@@ -496,7 +498,11 @@ def pandas2polars(pdf: pd.DataFrame) -> pl.DataFrame:
 # ---------------------------------------------------------------------------
 
 def polars2pandas(df: pl.DataFrame) -> pd.DataFrame:
-    """Convert a tidy polars DataFrame (daily or intraday) back to pandas."""
+    """Convert a tidy polars DataFrame (daily or intraday) back to pandas.
+    local_time (pl.Time, if present) needs no explicit handling here --
+    to_pandas() already converts it to plain Python datetime.time objects,
+    which pandas2sqlite() already knows how to write out.
+    """
     pdf = df.to_pandas()
     date_col = "date" if "date" in pdf.columns else "local_date"
     pdf["datetime"] = pd.to_datetime(pdf["datetime"]).astype("datetime64[us]")
@@ -526,8 +532,10 @@ def pandas2sqlite(
     """Write a tidy pandas DataFrame (daily or intraday) to SQLite.
     Creates the table if it doesn't exist.
     Uses INSERT OR REPLACE so the operation is idempotent.
-    local_time, if present, is stored as an extra TEXT column added via
-    ALTER TABLE when first encountered (for tables created before it existed).
+    local_time, if present, is a TEXT NOT NULL column (part of
+    _DDL_INTRADAY). The ALTER TABLE ADD COLUMN below only fires for an
+    intraday table created before local_time was part of that DDL --
+    harmless/skipped for any table created fresh with the current schema.
     """
     is_daily = "date" in pdf.columns
     has_lt = "local_time" in pdf.columns
@@ -558,8 +566,13 @@ def pandas2sqlite(
                 )
                 if has_lt:
                     lt = row.local_time
+                    # None (e.g. a null pl.Time round-tripped through
+                    # polars2pandas) must stay SQL NULL, not become the
+                    # literal string "None".
                     d["local_time"] = (
-                        lt.strftime("%H:%M:%S") if isinstance(lt, time) else str(lt)
+                        lt.strftime("%H:%M:%S") if isinstance(lt, time)
+                        else None if lt is None
+                        else str(lt)
                     )
             d["vo"] = int(row.vo)
             rows.append(d)

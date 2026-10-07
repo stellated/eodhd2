@@ -54,7 +54,7 @@ imports Database from eodhd_io and is the only coupling point.
 | timestamp  | int64           | pl.Int64        | INTEGER |
 | datetime   | datetime64[us]  | pl.Datetime(us) | TEXT    |
 | local_date | object (date)   | pl.Date         | TEXT "YYYY-MM-DD" |
-| local_time | str (optional)  | pl.Utf8         | TEXT "HH:MM:SS" (optional col) |
+| local_time | str (optional)  | pl.Time         | TEXT "HH:MM:SS" (optional col) |
 | op hi lo cl | float64        | pl.Float64      | REAL    |
 | vo         | int64           | pl.Int64        | INTEGER |
 
@@ -125,17 +125,26 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 - Converts date/local_date (Python datetime.date) to pl.Date
 - datetime -> pl.Datetime("us")
 - timestamp -> pl.Int64, vo -> pl.Int64
-- local_time preserved as pl.Utf8 if present
+- local_time, if present, parsed from its "HH:MM:SS" string into pl.Time
+  (a genuine time type, not text -- see doc/DESIGN_DECISIONS.md, "local_time
+  gets a real Time type")
 
 **polars2pandas(df) -> pd.DataFrame**
 - Inverse of pandas2polars. datetime restored to datetime64[us] (not ns).
 - date/local_date restored to Python datetime.date (object dtype)
-- local_time preserved as str if present
+- local_time, if present, comes back as Python datetime.time objects
+  (object dtype) -- polars' own to_pandas() does this automatically for a
+  pl.Time column, no explicit handling needed
 
 **pandas2sqlite(pdf, db, tablename)**
 - db: sqlite3.Connection OR str/Path (auto-opened and closed if Path/str)
 - Creates table with correct DDL if not exists
-- If local_time present and not already a column, uses ALTER TABLE ADD COLUMN
+- local_time (TEXT NOT NULL) is part of the intraday DDL itself; ALTER
+  TABLE ADD COLUMN only fires as a migration path for a table created
+  before local_time was part of that DDL
+- Accepts local_time as either a Python datetime.time object or a string;
+  a None local_time raises sqlite3.IntegrityError (NOT NULL) rather than
+  being silently written as the literal string "None"
 - INSERT OR REPLACE for idempotency
 
 **sqlite2pandas(db, tablename) -> pd.DataFrame**

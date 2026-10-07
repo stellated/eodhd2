@@ -1,7 +1,10 @@
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as dt_time
 from unittest import mock
 
 import pandas as pd
+import polars as pl
 import pytest
 import requests
 from hypothesis import HealthCheck, given, settings
@@ -20,6 +23,7 @@ from src.eodhd_io import (
     csv2pandas_intraday,
     fetch_daily,
     pandas2polars,
+    pandas2sqlite,
     polars2pandas,
     tips,
     unresolved_tips,
@@ -139,6 +143,53 @@ def test_pandas_polars_roundtrip():
     df = pandas2polars(pdf)
     pdf2 = polars2pandas(df)
     pd.testing.assert_frame_equal(pdf, pdf2)
+
+def test_pandas_polars_roundtrip_intraday_local_time():
+    """local_time round-trips pandas (str "HH:MM:SS") -> polars (pl.Time,
+    not pl.Utf8) -> pandas (datetime.time), with a null value staying a
+    real null rather than becoming the literal string "None"."""
+    pdf = pd.DataFrame({
+        "code": ["AAPL.US", "AAPL.US"],
+        "timestamp": [1609488600, 1609488900],
+        "datetime": pd.to_datetime(
+            ["2021-01-01 14:30:00", "2021-01-01 14:35:00"], utc=True
+        ).tz_localize(None),
+        "local_date": [date(2021, 1, 1), date(2021, 1, 1)],
+        "local_time": ["09:30:00", None],
+        "op": [100.0, 101.0],
+        "hi": [101.0, 102.0],
+        "lo": [99.0, 100.0],
+        "cl": [100.5, 101.5],
+        "vo": [1000, 1200],
+    })
+
+    df = pandas2polars(pdf)
+    assert df.schema["local_time"] == pl.Time
+
+    pdf2 = polars2pandas(df)
+    assert pdf2["local_time"].iloc[0] == dt_time(9, 30, 0)
+    assert pdf2["local_time"].iloc[1] is None
+
+def test_pandas2sqlite_null_local_time_rejected_not_silently_corrupted(tmp_path):
+    """local_time is TEXT NOT NULL in the schema, so a None value (e.g.
+    from a null pl.Time round-tripped through polars2pandas) must fail
+    loudly, not get silently written as the literal string "None" --
+    pandas2sqlite's isinstance(lt, time) check previously fell through to
+    str(lt) for anything that wasn't a real time object, which would have
+    stored bogus-but-plausible-looking "None" text instead of erroring."""
+    pdf = pd.DataFrame({
+        "code": ["AAPL.US"],
+        "timestamp": [1609488600],
+        "datetime": pd.to_datetime(["2021-01-01 14:30:00"]),
+        "local_date": [date(2021, 1, 1)],
+        "local_time": [None],
+        "op": [100.0], "hi": [101.0], "lo": [99.0], "cl": [100.5],
+        "vo": [1000],
+    })
+
+    db_path = tmp_path / "test.db"
+    with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+        pandas2sqlite(pdf, db_path, "intraday_5m")
 
 # --- Tests for add_local_time ---
 def test_add_local_time(sample_intraday_csv):
