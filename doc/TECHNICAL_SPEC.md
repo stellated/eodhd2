@@ -472,7 +472,11 @@ Each run:
    diagnosing a failure from it) much harder to follow.
 4. Calls `tips()` once with the sorted list and the tablename/interval for
    the current `--mode` (`MODE_PRICE_CONFIG`), if the list is non-empty
-   (logs and skips otherwise).
+   (logs and skips otherwise). If `--mode` is `intraday-price`, also calls
+   `eodhd_io.update_outcomes(db)` right after -- the `outcomes` table's
+   trigger logic is entirely 5-minute-bar based, so it has nothing new to
+   work with until `intraday_5m` does (see `doc/DESIGN_DECISIONS.md`,
+   "outcomes design"). Not run for `daily-price`/`tips-only`.
 5. Calls `_log_unresolved_tips(db)`: builds the *full* tip history via
    `_all_tips()` (unlike `_still_open_tips()`, this is not cutoff-filtered
    -- `unresolved_tips()` specifically needs tips whose window has already

@@ -22,6 +22,11 @@ following a ticker through a rename/split/merger and a ticker_aliases entry
 is needed -- see _log_unresolved_tips() and doc/DESIGN_DECISIONS.md
 ("ticker_aliases: smoothing renamed / split / merged / cashed-out tickers").
 
+intraday-price runs also call update_outcomes() after the price fetch --
+the outcomes table's entry/exit trigger logic is entirely 5-minute-bar
+based, so it has nothing new to work with until intraday_5m does. See
+doc/DESIGN_DECISIONS.md ("outcomes design").
+
 --mode selects what this run actually fetches -- see doc/DESIGN_DECISIONS.md
 ("weekday/Saturday/Sunday split") for why price fetching isn't done every
 day:
@@ -56,7 +61,7 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from email_downloader import download_emails  # noqa: E402
-from eodhd_io import DEFAULT_N2, Database, tips, unresolved_tips  # noqa: E402
+from eodhd_io import DEFAULT_N2, Database, tips, unresolved_tips, update_outcomes  # noqa: E402
 from tips_io import parse_tip_emails, tips_exchange2sqlite  # noqa: E402
 
 SENDER_EMAIL = "reports@stockdataanalytics.com"
@@ -213,6 +218,10 @@ def main() -> None:
                 )
             else:
                 log.info("no tips (new or still-open) to fetch price windows for")
+
+            if args.mode == "intraday-price":
+                update_outcomes(db)
+                log.info("updated outcomes")
 
         _log_unresolved_tips(db)
 

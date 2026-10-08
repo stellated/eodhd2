@@ -613,6 +613,11 @@ input, which is why it's a stored table rather than computed on demand
 (see "outcomes table schema" below) despite this codebase's usual
 preference for computing derived state fresh each time.
 
+**Trigger:** called from `daily_update.py`'s `intraday-price` mode
+(Sundays), right after the intraday price fetch -- not from `daily-price`
+or `tips-only`, since the trigger logic is entirely 5-minute-bar based and
+has nothing new to evaluate until `intraday_5m` does.
+
 ### outcomes table schema
 **Decision:** PK `(code, tip_date)`. `exchange`/`tip_n` are included
 (despite not being part of the PK) purely so a row can be traced back to
