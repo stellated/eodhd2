@@ -602,6 +602,149 @@ runs are unaffected -- the flag defaults off, so `unseen_only=True` and
 
 ---
 
+## outcomes design (2026-10-07)
+
+`update_outcomes()` simulates, for every tip, the trade that would result
+from buying in the entry zone, selling at target/stop/time, and stores one
+row per tip in `outcomes`. Designed from the start with an eventual split
+into a separate analysis project in mind (Kelly sizing, portfolio
+construction, etc.) -- `outcomes` is meant to be that project's primary
+input, which is why it's a stored table rather than computed on demand
+(see "outcomes table schema" below) despite this codebase's usual
+preference for computing derived state fresh each time.
+
+### outcomes table schema
+**Decision:** PK `(code, tip_date)`. `exchange`/`tip_n` are included
+(despite not being part of the PK) purely so a row can be traced back to
+its exact source `tip_details` row (whose real PK is `(exchange, tip_date,
+tip_n)`) for pulling `win_probability`/`pattern_quality_score`/etc. during
+analysis. `buy_trigger_price`/`sell_trigger_price` are stored alongside
+the slippage-adjusted `buy_price`/`sell_price` so a different slippage
+assumption can be explored later by recomputing from the trigger price,
+without re-running the whole simulation. `buy_bar_volume`/
+`sell_bar_volume` capture the triggering bar's volume at computation time
+-- the direct input for Ian's planned investigation into volume-based
+slippage, cheap to capture here vs. re-joining `intraday_5m` (millions of
+rows) later.
+
+**Deliberately excluded:** `tip_details`'s own inputs (`holding_period_*`,
+`stop`, `target`, `entry_zone_*`). Duplicating them risks drift if
+`tip_details` is ever corrected/reparsed; reachable via the
+`(exchange, tip_date, tip_n)` back-reference instead.
+
+### status: one enum, not separate bought/sell_type fields
+**Decision:** a single `status` column (`CHECK`-constrained, same pattern
+as `ticker_aliases`) with seven values: `pending`, `aborted`,
+`expired_unfilled`, `open`, `closed_target`, `closed_stop`, `closed_time`.
+
+**Reasoning:** two independent fields (a `bought` boolean + a `sell_type`
+string, as originally proposed) can represent nonsensical combinations
+(`bought=False` with a `sell_type` set) -- "make illegal states
+unrepresentable." A single enum also naturally captures a state the
+original two-field proposal missed entirely: a tip can be genuinely
+*pending* (still inside its entry window, could still trigger), which is
+different from *expired_unfilled* (window closed, never triggered) and
+different again from *open* (bought, not yet exited). `pending`/`open`
+rows sitting unresolved indefinitely are expected, not an error -- same
+"surface, don't silently drop" philosophy as `unresolved_tips()`.
+
+**`aborted` vs. `expired_unfilled`:** a stock that trades through the stop
+level *before ever entering* is a materially different outcome from one
+that simply never reached the entry zone -- the former signals adverse
+price action (gap/decline risk), the latter is passive drift. Detected
+immediately (not deferred to window-close): once price has breached the
+stop without ever having entered, the setup is invalidated regardless of
+how much of the entry window remains.
+
+### Fill-price convention: trigger price, with gap-asymmetric realism
+**Decision:** `_level_crossed()` (single level: target/stop) and
+`_zone_touched()` (a range: the entry zone) both use "fill at the level/
+boundary if crossed mid-bar, fill at the bar's open if the bar gapped past
+it entirely." For the entry zone specifically: the bar's open if it opened
+inside the zone already, otherwise whichever boundary was approached
+first (zone_high if falling from above, zone_low if rising from below).
+
+**Reasoning:** with only 5-minute OHLC bars (no tick data), assuming the
+best price within any bar that merely touches a trigger is a well-known
+source of backtest over-optimism. Fill-at-the-level is the standard,
+defensible convention. The gap-handling is deliberately *asymmetric* and
+realistic rather than a blanket "use the open": a gap through a sell-side
+target fills *better* than the level (favourable to the trader), a gap
+through a stop fills *worse* (against the trader) -- this is also where
+gap risk shows up in the backtest's numbers for free, without a separate
+gap-slippage model.
+
+### Same-bar collisions: assume the worst, always log
+**Decision:** if a single bar's range covers both target and stop, assume
+stop (the worse outcome) and log a warning. If the exit triggers on the
+exact same bar as entry (`_check_open()`'s bars start from `buy_timestamp`
+inclusive, so this is possible, not excluded), it's allowed to happen and
+also logged.
+
+**Reasoning:** with OHLC-only data, the actual intrabar path is
+genuinely unknowable, so there's no way to resolve either case precisely
+-- "assume worst case" is conservative (won't overstate performance) for
+the collision case, and same-bar entry+exit is realistic enough (a sharp
+reversal bar) to allow rather than artificially exclude. Both are logged,
+not silently handled, specifically so their actual frequency can be
+measured empirically later rather than assumed.
+
+### Slippage: a flat parameter now, a function later
+**Decision:** `_apply_slippage(price, side, bps=DEFAULT_SLIPPAGE_BPS)` --
+`bps` (default 10, i.e. 0.10% per leg) is a parameter, not hardcoded
+inside the function, specifically so a future volume-conditioned model
+(bar volume relative to that ticker's own trailing average -- Ian's
+planned investigation) can be substituted at the call site without
+touching `_apply_slippage()` itself.
+
+### Trading-day window boundaries
+**Decision:** `tip_date`/`buy_date` count as day 0. `holding_period_low=N`
+means a tip can still enter through day N inclusive (N+1 distinct trading
+days total); the entry window closes only once day N+1 (an (N+2)th
+distinct day) has been seen. `holding_period_high` for the time-exit
+deadline works identically, anchored at `buy_date` instead of `tip_date`.
+Day-counting itself (`_trading_days_seen()`) counts dates actually present
+in `intraday_5m`, not `exchange_calendars` sessions -- same
+half-day-correctness reasoning as `_start_from_actual_dates()`.
+
+**Time exit:** fills at the last available bar's close (not a crossed
+level -- there's nothing being "crossed" for a deadline), with the same
+slippage treatment as any other exit.
+
+### Duplicate (code, tip_date): lowest tip_n wins, logged
+**Decision:** `_seed_new_outcomes()` keeps the lowest `tip_n` (the
+newsletter's own best-ranked slot) when the same ticker is tipped more
+than once on the same day (e.g. a dual-listed security appearing in both
+a NASDAQ and NYSE email) and logs a warning about the discarded
+duplicate(s).
+
+### update_outcomes() recomputes fresh, not incrementally
+**Decision:** every call fully reprocesses every non-terminal (`pending`/
+`open`) row against the complete, currently-available price history for
+that tip -- re-scanning bars already examined in a prior call rather than
+tracking "where did we leave off." Despite `outcomes` itself being a
+stored table (see above -- the opposite choice from `unresolved_tips()`),
+the *computation* follows the same wide-recompute-over-incremental-state
+philosophy as `_still_open_tips()`/`unresolved_tips()`: per-ticker weekly
+data volumes are small, so the wasted re-scan is cheap, and it avoids an
+entire class of "which bars have I already looked at" state-tracking bugs.
+
+### Chaining via a dispatch table, not literally-named cross-calling functions
+**Decision:** `_advance_position()` is a `while pos["status"] in _CHECKERS`
+loop over a `{status: checker_function}` dict, re-applying immediately
+whenever a checker changes a position's status -- so a position that both
+enters and exits within the same batch of new bars resolves fully in one
+call rather than lagging a cycle.
+
+**Reasoning:** this realizes the originally-proposed design (chained
+`update_STATUS_positions()` functions, each calling the next by name on
+transition) with the same chaining *behavior*, but as a single small loop
+over a lookup table instead of N functions referencing each other by
+name -- avoids a sprawl of cross-calling functions as more states get
+added later, while still fully honoring the "don't lag a cycle" intent.
+
+---
+
 ## tips_io design
 
 ### All tickers appended with ".US"

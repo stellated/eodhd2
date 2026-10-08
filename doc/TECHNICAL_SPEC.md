@@ -197,6 +197,44 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
   last_available_date` -- see doc/DESIGN_DECISIONS.md on why this is
   surfaced rather than silently filtered (survivorship bias).
 
+### outcomes: simulated trade outcomes
+
+**Table** `outcomes`: PK `(code, tip_date)`. Columns: `exchange`, `tip_n`
+(back-reference to the source `tip_details` row), `status` (`CHECK`-
+constrained: `pending`, `aborted`, `expired_unfilled`, `open`,
+`closed_target`, `closed_stop`, `closed_time`), `buy_date`,
+`buy_timestamp`, `buy_local_time`, `buy_trigger_price`, `buy_price`,
+`buy_bar_volume`, `risk_per_share`, and the `sell_*`/`profit_per_share`/
+`r_multiple` equivalents. See `doc/DESIGN_DECISIONS.md` ("outcomes
+design") for the full rationale behind every column and the status enum.
+
+**update_outcomes(db, tablename="outcomes") -> None**
+- Seeds a `pending` row (via `_seed_new_outcomes()`) for every tip not yet
+  present, deduping same-day duplicate tickers to the lowest `tip_n`
+  (logged).
+- Recomputes every `pending`/`open` row against currently-available
+  `intraday_5m` data, from scratch each call (not incremental).
+- `pending` -> `aborted` (stop breached before ever entering) /
+  `open` (entry zone touched) / `expired_unfilled` (window closed,
+  neither happened) / stays `pending` (window still open).
+- `open` -> `closed_target` / `closed_stop` (same-bar collision: assumes
+  `closed_stop`, logs a warning) / `closed_time` (last available bar's
+  close) / stays `open`.
+- Fill prices: `_level_crossed()`/`_zone_touched()` fill at the crossed
+  level/boundary, or the bar's open if the bar gapped past it (gap
+  direction is realistic, not symmetric -- see `doc/DESIGN_DECISIONS.md`).
+  `_apply_slippage()` (flat `DEFAULT_SLIPPAGE_BPS`, a parameter so a
+  volume-conditioned model can replace it later) is applied on top of
+  every fill.
+- Trading-day window boundaries (`_entry_window_closed()`/
+  `_time_exit_due()`) count actual dates present in `intraday_5m`, not
+  `exchange_calendars` sessions -- same half-day correctness as
+  `_start_from_actual_dates()`. `tip_date`/`buy_date` count as day 0.
+- `_advance_position()` chains a position through multiple status
+  transitions within one call (e.g. enter and exit within the same batch
+  of new bars) via a `{status: checker}` dispatch table, so it never lags
+  a cycle waiting for the next scheduled run.
+
 ### ticker_aliases: smoothing renamed / split / merged / cashed-out tickers
 
 **Table** `ticker_aliases`: `old_code TEXT, new_code TEXT, effective_date

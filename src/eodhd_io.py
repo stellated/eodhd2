@@ -86,6 +86,13 @@ DEFAULT_N_DAYS: dict[str, int] = {"1d": 60, "1m": 5, "5m": 10, "1h": 20}
 DEFAULT_N1: int = 20
 DEFAULT_N2: int = 20
 
+# Flat slippage assumption for update_outcomes(), applied against the
+# trader on both legs (buys cost more, sells receive less). Deliberately a
+# parameter on _apply_slippage() rather than hardcoded inside it, so a
+# future volume-conditioned model can be substituted per-call later --
+# see doc/DESIGN_DECISIONS.md, "outcomes table schema".
+DEFAULT_SLIPPAGE_BPS: float = 10
+
 # Columns EODHD's CSV responses must contain. Shared between the network
 # fetch path (_eodhd_fetch_csv, validated as soon as the HTTP response comes
 # back) and the file-based path (csv2pandas_daily/csv2pandas_intraday).
@@ -1117,6 +1124,352 @@ def unresolved_tips(
     return pd.DataFrame(
         rows, columns=["code", "tip_date", "actual_days", "last_available_date"]
     )
+
+
+# ---------------------------------------------------------------------------
+# outcomes: simulated trade outcomes for each tip
+# ---------------------------------------------------------------------------
+# See doc/DESIGN_DECISIONS.md, "outcomes table schema", for the full
+# rationale -- status values, column-by-column reasoning, and what was
+# deliberately left out (tip_details' own inputs: holding_period_*, stop,
+# target, entry_zone_* -- joined via (exchange, tip_date, tip_n) instead of
+# duplicated here).
+_DDL_OUTCOMES = """
+CREATE TABLE IF NOT EXISTS {tablename} (
+    code TEXT NOT NULL,
+    tip_date TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    tip_n INTEGER NOT NULL,
+
+    status TEXT NOT NULL CHECK (status IN (
+        'pending', 'aborted', 'expired_unfilled', 'open',
+        'closed_target', 'closed_stop', 'closed_time'
+    )),
+
+    buy_date TEXT,
+    buy_timestamp INTEGER,
+    buy_local_time TEXT,
+    buy_trigger_price REAL,
+    buy_price REAL,
+    buy_bar_volume INTEGER,
+    risk_per_share REAL,
+
+    sell_date TEXT,
+    sell_timestamp INTEGER,
+    sell_local_time TEXT,
+    sell_trigger_price REAL,
+    sell_price REAL,
+    sell_bar_volume INTEGER,
+
+    profit_per_share REAL,
+    r_multiple REAL,
+
+    PRIMARY KEY (code, tip_date)
+);
+"""
+
+
+def _level_crossed(bar: dict, level: float, direction: str) -> tuple[bool, Optional[float]]:
+    """Did this bar cross `level`? direction="up" (e.g. a target, approached
+    from below) or "down" (e.g. a stop, approached from above).
+
+    Fill price: the level itself if crossed mid-bar, or the bar's open if
+    it gapped past the level entirely. Deliberately asymmetric: gapping
+    past a sell-side target fills *better* than the level (open beyond
+    target, in the trader's favour); gapping past a stop fills *worse*
+    (open beyond stop, against the trader). This is where gap risk shows
+    up in the numbers for free, without a separate gap-slippage model.
+    """
+    if direction == "up":
+        if bar["hi"] < level:
+            return False, None
+        return True, bar["op"] if bar["op"] >= level else level
+    else:
+        if bar["lo"] > level:
+            return False, None
+        return True, bar["op"] if bar["op"] <= level else level
+
+
+def _zone_touched(
+    bar: dict, zone_low: float, zone_high: float
+) -> tuple[bool, Optional[float]]:
+    """Did this bar's range overlap the entry zone [zone_low, zone_high]?
+
+    Fill price: the bar's open if it opened inside the zone already,
+    otherwise whichever boundary was approached first (zone_high if
+    falling from above, zone_low if rising from below).
+    """
+    if bar["hi"] < zone_low or bar["lo"] > zone_high:
+        return False, None
+    if zone_low <= bar["op"] <= zone_high:
+        return True, bar["op"]
+    return True, (zone_high if bar["op"] > zone_high else zone_low)
+
+
+def _apply_slippage(price: float, side: str, bps: float = DEFAULT_SLIPPAGE_BPS) -> float:
+    """Slippage always works against the trader: buys cost slightly more,
+    sells receive slightly less than the trigger price."""
+    adj = price * (bps / 10_000)
+    return price + adj if side == "buy" else price - adj
+
+
+def _trading_days_seen(bars: pl.DataFrame, on_or_after: date) -> set:
+    """Distinct local_date values in `bars` on/after `on_or_after`. Counts
+    dates actually present in the data, not exchange_calendars sessions --
+    same half-day-correctness reasoning as _start_from_actual_dates(): a
+    half-day exchange_calendars doesn't recognize as a session still shows
+    up here if EODHD has real bars for it, and still correctly counts.
+    """
+    return {d for d in bars["local_date"].unique().to_list() if d >= on_or_after}
+
+
+def _entry_window_closed(tip: dict, bars: pl.DataFrame) -> bool:
+    """True once holding_period_low trading days have passed without an
+    entry trigger. tip_date itself counts as day 0 -- a tip with
+    holding_period_low=N can still be bought through day N inclusive
+    (N+1 distinct trading days total, days 0..N); the window closes only
+    once day N+1 (an (N+2)th distinct day) has been seen with still no
+    entry."""
+    return len(_trading_days_seen(bars, tip["tip_date"])) > tip["holding_period_low"] + 1
+
+
+def _time_exit_due(pos: dict, tip: dict, bars: pl.DataFrame) -> bool:
+    """Same day-0/day-N boundary as _entry_window_closed(), anchored at
+    buy_date instead of tip_date and holding_period_high instead of
+    holding_period_low."""
+    return len(_trading_days_seen(bars, pos["buy_date"])) > tip["holding_period_high"] + 1
+
+
+def _sell_fields(bar: dict, trigger_price: float, pos: dict) -> dict:
+    """Common fields for any exit (target/stop/time) -- same slippage
+    treatment regardless of why the exit happened."""
+    sell_price = _apply_slippage(trigger_price, "sell")
+    return {
+        "sell_date": bar["local_date"],
+        "sell_timestamp": bar["timestamp"],
+        "sell_local_time": bar["local_time"],
+        "sell_trigger_price": trigger_price,
+        "sell_price": sell_price,
+        "sell_bar_volume": bar["vo"],
+        "profit_per_share": sell_price - pos["buy_price"],
+        "r_multiple": (sell_price - pos["buy_price"]) / pos["risk_per_share"],
+    }
+
+
+def _check_pending(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
+    """pos currently 'pending'. `bars` is every intraday_5m row for this
+    code from tip_date onward. Checks, in order: a stop breach before ever
+    entering -> aborted; the entry zone touched -> open (buy_* fields
+    populated); the entry window closing with neither -> expired_unfilled.
+    """
+    for bar in bars.iter_rows(named=True):
+        breached, _ = _level_crossed(bar, tip["stop"], direction="down")
+        if breached:
+            return {**pos, "status": "aborted"}
+        touched, fill = _zone_touched(bar, tip["entry_zone_low"], tip["entry_zone_high"])
+        if touched:
+            buy_price = _apply_slippage(fill, "buy")
+            return {
+                **pos, "status": "open",
+                "buy_date": bar["local_date"],
+                "buy_timestamp": bar["timestamp"],
+                "buy_local_time": bar["local_time"],
+                "buy_trigger_price": fill,
+                "buy_price": buy_price,
+                "buy_bar_volume": bar["vo"],
+                "risk_per_share": buy_price - tip["stop"],
+            }
+    if _entry_window_closed(tip, bars):
+        return {**pos, "status": "expired_unfilled"}
+    return pos
+
+
+def _check_open(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
+    """pos currently 'open'. `bars` is every intraday_5m row for this code
+    from buy_timestamp onward (inclusive) -- so same-bar entry+exit is
+    possible; logged, not prevented, to see how often it actually happens.
+    """
+    for bar in bars.iter_rows(named=True):
+        hit_target, fill_t = _level_crossed(bar, tip["target"], direction="up")
+        hit_stop, fill_s = _level_crossed(bar, tip["stop"], direction="down")
+        if hit_target and hit_stop:
+            logging.warning(
+                f"{pos['code']} {pos['tip_date']}: bar {bar['timestamp']} hit "
+                f"both target and stop -- assuming stop (worst case)."
+            )
+            hit_target = False
+        if hit_target or hit_stop:
+            if bar["timestamp"] == pos["buy_timestamp"]:
+                logging.warning(
+                    f"{pos['code']} {pos['tip_date']}: exit triggered on the "
+                    f"same bar as entry (timestamp {bar['timestamp']})."
+                )
+            sell_type = "closed_target" if hit_target else "closed_stop"
+            fill = fill_t if hit_target else fill_s
+            return {**pos, "status": sell_type, **_sell_fields(bar, fill, pos)}
+    if _time_exit_due(pos, tip, bars):
+        last_bar = bars.row(-1, named=True)
+        return {
+            **pos, "status": "closed_time",
+            **_sell_fields(last_bar, last_bar["cl"], pos),
+        }
+    return pos
+
+
+_CHECKERS = {"pending": _check_pending, "open": _check_open}
+
+
+def _advance_position(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
+    """Apply the checker for pos's current status; if that changes its
+    status to another checkable one, immediately re-apply (chaining) so a
+    position that both enters and exits within the same batch of bars
+    resolves fully in one pass rather than lagging a cycle. `bars` must
+    span from tip_date onward -- narrowed to >= buy_timestamp automatically
+    before being handed to the 'open' checker.
+    """
+    while pos["status"] in _CHECKERS:
+        checker = _CHECKERS[pos["status"]]
+        relevant_bars = (
+            bars if pos["status"] == "pending"
+            else bars.filter(pl.col("timestamp") >= pos["buy_timestamp"])
+        )
+        new_pos = checker(pos, relevant_bars, tip)
+        if new_pos["status"] == pos["status"]:
+            return new_pos
+        pos = new_pos
+    return pos
+
+
+def _seed_new_outcomes(
+    db: "Database", tablename: str = "outcomes", tips_tablename: str = "tip_details"
+) -> None:
+    """Insert a 'pending' row for every tip not yet in `tablename`. If a
+    (code, tip_date) pair appears under more than one tip_n (e.g. tipped in
+    both a NASDAQ and NYSE email the same day), keeps the lowest tip_n (the
+    newsletter's own best-ranked slot) and logs a warning about the
+    discarded duplicate(s).
+    """
+    tips_pdf = pd.read_sql(
+        f"SELECT exchange, tip_date, tip_n, code FROM {tips_tablename} "  # noqa: S608
+        f"WHERE code IS NOT NULL ORDER BY tip_n",
+        db.conn,
+    )
+    if tips_pdf.empty:
+        return
+
+    for (code, tip_date), group in tips_pdf.groupby(["code", "tip_date"]):
+        if len(group) > 1:
+            kept, dropped = group.iloc[0], group.iloc[1:]
+            logging.warning(
+                f"{code} tipped more than once on {tip_date} -- keeping "
+                f"tip_n {kept['tip_n']} ({kept['exchange']}), discarding "
+                f"{[(r.exchange, r.tip_n) for r in dropped.itertuples()]}."
+            )
+    deduped = tips_pdf.groupby(["code", "tip_date"], as_index=False).first()
+
+    existing = {
+        (r[0], r[1])
+        for r in db.conn.execute(f"SELECT code, tip_date FROM {tablename}")  # noqa: S608
+    }
+    for row in deduped.itertuples():
+        if (row.code, row.tip_date) in existing:
+            continue
+        db.conn.execute(
+            f"INSERT INTO {tablename} (code, tip_date, exchange, tip_n, status) "  # noqa: S608
+            f"VALUES (?, ?, ?, ?, 'pending')",
+            (row.code, row.tip_date, row.exchange, int(row.tip_n)),
+        )
+    db.conn.commit()
+
+
+def _load_bars(
+    db: "Database", code: str, from_date: date, tablename: str = "intraday_5m"
+) -> pl.DataFrame:
+    """Every intraday_5m bar for `code` on/after `from_date`, sorted by
+    timestamp. Deliberately read-only -- interval/api_token omitted so this
+    never triggers an auto-fetch; update_outcomes() only ever uses whatever
+    the Sunday intraday-price run has already fetched. Empty (not an
+    error) if `tablename` doesn't exist yet -- real before the first
+    intraday-price run ever happens.
+    """
+    if not db._table_exists(tablename):
+        return pl.DataFrame()
+    pdf = db.to_pandas(tablename, code=code, start=from_date)
+    if pdf.empty:
+        return pandas2polars(pdf)
+    return pandas2polars(pdf).sort("timestamp")
+
+
+def _load_tip(db: "Database", exchange: str, tip_date: str, tip_n: int) -> dict:
+    cols = ["entry_zone_low", "entry_zone_high", "target", "stop",
+            "holding_period_low", "holding_period_high"]
+    row = db.conn.execute(
+        f"SELECT {', '.join(cols)} FROM tip_details "  # noqa: S608
+        f"WHERE exchange = ? AND tip_date = ? AND tip_n = ?",
+        (exchange, tip_date, tip_n),
+    ).fetchone()
+    tip = dict(zip(cols, row))
+    tip["tip_date"] = date.fromisoformat(tip_date)
+    return tip
+
+
+def _load_positions(db: "Database", tablename: str, statuses: list[str]) -> list[dict]:
+    """Load outcomes rows with any of `statuses`, with date-string columns
+    restored to Python date objects. None stays None (not NaT): a still-
+    pending row's buy_date is NULL, and pd.to_datetime() would otherwise
+    turn that into NaT rather than a clean None.
+    """
+    placeholders = ",".join("?" * len(statuses))
+    pdf = pd.read_sql(
+        f"SELECT * FROM {tablename} WHERE status IN ({placeholders})",  # noqa: S608
+        db.conn, params=statuses,
+    )
+    for col in ("tip_date", "buy_date", "sell_date"):
+        pdf[col] = pdf[col].apply(lambda v: date.fromisoformat(v) if isinstance(v, str) else None)
+    return pdf.to_dict("records")
+
+
+def _write_position(db: "Database", tablename: str, pos: dict) -> None:
+    """INSERT OR REPLACE on the same (code, tip_date) PK -- terminal
+    statuses are filtered out of _load_positions() before reaching here, so
+    this never re-processes an already-resolved row."""
+    row = dict(pos)
+    for key in ("tip_date", "buy_date", "sell_date"):
+        if isinstance(row.get(key), date):
+            row[key] = row[key].isoformat()
+    for key in ("buy_local_time", "sell_local_time"):
+        if isinstance(row.get(key), time):
+            row[key] = row[key].strftime("%H:%M:%S")
+    cols = list(row.keys())
+    db.conn.execute(
+        f"INSERT OR REPLACE INTO {tablename} ({', '.join(cols)}) "  # noqa: S608
+        f"VALUES ({', '.join(f':{c}' for c in cols)})",
+        row,
+    )
+    db.conn.commit()
+
+
+def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
+    """Recompute every non-terminal outcomes row against whatever price
+    data is currently available. Seeds a new 'pending' row for every tip
+    not yet represented (see _seed_new_outcomes()). Safe to call repeatedly
+    -- fully recomputes each non-terminal position from scratch each time
+    rather than tracking incremental state, consistent with
+    _still_open_tips()/unresolved_tips()'s existing wide-recompute-over-
+    incremental-state approach.
+    """
+    db.conn.execute(_DDL_OUTCOMES.format(tablename=tablename))
+    _seed_new_outcomes(db, tablename)
+
+    for pos in _load_positions(db, tablename, statuses=["pending", "open"]):
+        tip = _load_tip(db, pos["exchange"], pos["tip_date"].isoformat(), pos["tip_n"])
+        anchor = tip["tip_date"] if pos["status"] == "pending" else pos["buy_date"]
+        bars = _load_bars(db, pos["code"], from_date=anchor)
+        if bars.is_empty():
+            continue
+        new_pos = _advance_position(pos, bars, tip)
+        if new_pos != pos:
+            _write_position(db, tablename, new_pos)
 
 
 # ---------------------------------------------------------------------------
