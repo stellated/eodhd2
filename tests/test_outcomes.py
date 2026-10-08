@@ -16,6 +16,7 @@ from src.eodhd_io import (
     _check_pending,
     _entry_window_closed,
     _level_crossed,
+    _load_tip,
     _seed_new_outcomes,
     _sell_fields,
     _time_exit_due,
@@ -472,3 +473,39 @@ def test_update_outcomes_is_idempotent_on_resolved_positions(tmp_path):
             "SELECT status FROM outcomes WHERE code = 'AAA.US' AND tip_date = '2026-01-05'"
         ).fetchone()
     assert row == ("closed_target",)
+
+
+# --- _load_tip validation / update_outcomes() resilience to bad tip rows --
+
+def test_load_tip_raises_naming_the_null_field(tmp_path):
+    """A real incident: tips_io.py has been observed to leave
+    holding_period_low/high NULL for some full-detail cards (tip_n<=3) --
+    _load_tip() must name exactly which field(s) are missing, not let a
+    None reach the trigger-crossing comparisons as an opaque TypeError."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_full_tip(db, holding_period_low=None, holding_period_high=None)
+        with pytest.raises(ValueError, match="holding_period_low.*holding_period_high"):
+            _load_tip(db, "NASDAQ", "2026-01-05", 1)
+
+def test_update_outcomes_skips_bad_tip_and_continues(tmp_path, caplog):
+    """A tip_details row with a NULL required field must not abort the
+    whole update_outcomes() run -- same resilience philosophy as tips()'s
+    per-tip try/except."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_full_tip(db, code="BAD.US", holding_period_low=None, holding_period_high=None)
+        _seed_full_tip(db, code="GOOD.US", exchange="NYSE")
+        _seed_intraday_bars(db, "GOOD.US", [
+            {"timestamp": 1, "local_date": date(2026, 1, 5), "local_time": "09:30:00",
+             "op": 11.0, "hi": 11.1, "lo": 10.9, "cl": 11.0, "vo": 1000},
+            {"timestamp": 2, "local_date": date(2026, 1, 5), "local_time": "09:35:00",
+             "op": 10.8, "hi": 10.9, "lo": 10.2, "cl": 10.3, "vo": 2000},
+            {"timestamp": 3, "local_date": date(2026, 1, 5), "local_time": "09:40:00",
+             "op": 11.0, "hi": 12.1, "lo": 10.9, "cl": 12.0, "vo": 3000},
+        ])
+        with caplog.at_level("ERROR"):
+            update_outcomes(db)
+        rows = dict(db.conn.execute(
+            "SELECT code, status FROM outcomes"
+        ).fetchall())
+    assert rows == {"BAD.US": "pending", "GOOD.US": "closed_target"}
+    assert any("BAD.US" in rec.message for rec in caplog.records)

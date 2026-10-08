@@ -1401,6 +1401,13 @@ def _load_bars(
 
 
 def _load_tip(db: "Database", exchange: str, tip_date: str, tip_n: int) -> dict:
+    """Raises ValueError with the exact missing field(s) named if any
+    required tip_details column is NULL -- e.g. a tips_io.py parsing gap
+    (holding_period_low/high have been observed NULL for some full-detail
+    cards, tip_n<=3, see doc/DESIGN_DECISIONS.md) -- rather than letting a
+    None silently reach _level_crossed()'s price comparison several calls
+    later as an opaque TypeError.
+    """
     cols = ["entry_zone_low", "entry_zone_high", "target", "stop",
             "holding_period_low", "holding_period_high"]
     row = db.conn.execute(
@@ -1408,7 +1415,16 @@ def _load_tip(db: "Database", exchange: str, tip_date: str, tip_n: int) -> dict:
         f"WHERE exchange = ? AND tip_date = ? AND tip_n = ?",
         (exchange, tip_date, tip_n),
     ).fetchone()
+    if row is None:
+        raise ValueError(f"No tip_details row for ({exchange}, {tip_date}, tip_n={tip_n}).")
     tip = dict(zip(cols, row))
+    missing = [c for c in cols if tip[c] is None]
+    if missing:
+        raise ValueError(
+            f"tip_details row for ({exchange}, {tip_date}, tip_n={tip_n}) has "
+            f"NULL {missing} -- likely a tips_io.py parsing gap for this tip; "
+            f"outcomes can't be computed without these."
+        )
     tip["tip_date"] = date.fromisoformat(tip_date)
     return tip
 
@@ -1462,14 +1478,24 @@ def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
     _seed_new_outcomes(db, tablename)
 
     for pos in _load_positions(db, tablename, statuses=["pending", "open"]):
-        tip = _load_tip(db, pos["exchange"], pos["tip_date"].isoformat(), pos["tip_n"])
-        anchor = tip["tip_date"] if pos["status"] == "pending" else pos["buy_date"]
-        bars = _load_bars(db, pos["code"], from_date=anchor)
-        if bars.is_empty():
-            continue
-        new_pos = _advance_position(pos, bars, tip)
-        if new_pos != pos:
-            _write_position(db, tablename, new_pos)
+        # Same resilience philosophy as tips()'s per-tip try/except: an
+        # unattended run over hundreds of positions should never let one
+        # bad row (e.g. a tip_details row with a NULL field -- a
+        # tips_io.py parsing gap) abort every other position still queued.
+        try:
+            tip = _load_tip(db, pos["exchange"], pos["tip_date"].isoformat(), pos["tip_n"])
+            anchor = tip["tip_date"] if pos["status"] == "pending" else pos["buy_date"]
+            bars = _load_bars(db, pos["code"], from_date=anchor)
+            if bars.is_empty():
+                continue
+            new_pos = _advance_position(pos, bars, tip)
+            if new_pos != pos:
+                _write_position(db, tablename, new_pos)
+        except Exception as e:
+            logging.error(
+                f"Skipping outcomes update for {pos['code']} tip {pos['tip_date']}: "
+                f"{type(e).__name__}: {e}. {_resource_snapshot()}"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -748,6 +748,78 @@ over a lookup table instead of N functions referencing each other by
 name -- avoids a sprawl of cross-calling functions as more states get
 added later, while still fully honoring the "don't lag a cycle" intent.
 
+### update_outcomes() needed the same per-position resilience as tips() (2026-10-08)
+**Problem:** the first real run of `--mode intraday-price` after
+`update_outcomes()` was wired in crashed outright: one `tip_details` row
+had `holding_period_low`/`holding_period_high` both `NULL`, and
+`_level_crossed(bar, tip["stop"], ...)` raised an unhandled `TypeError`
+(`'>' not supported between NoneType and float`) three calls away from
+the actual cause, aborting `update_outcomes()` -- and, since it runs
+inside the same `with Database(...)` block as everything else in
+`daily_update.py`, the whole script, before the "push db back to
+OneDrive" step ever ran. Exactly the same shape of problem `tips()`
+already solved (see "tips() per-tip failure handling" above), just not
+yet applied here.
+
+Root cause, confirmed by querying the affected db directly: a real
+`tips_io.py` parsing gap, not a fluke -- `holding_period_low` is `NULL`
+for 54 of 90 full-detail-card tips (`tip_n` 1-3) in the captured history,
+but 0 of the compact-card tips (`tip_n` 4+). Worth investigating in
+`tips_io.py` separately; not yet done.
+
+**Decision:** two changes, mirroring `tips()`'s fix exactly:
+1. `_load_tip()` now validates all six fields it selects and raises
+   `ValueError` naming the exact missing field(s), rather than letting a
+   `None` silently reach a price comparison several calls later as an
+   opaque `TypeError`.
+2. `update_outcomes()`'s per-position loop wraps the fetch/advance/write
+   in `try/except Exception`, logging (with `_resource_snapshot()`, same
+   as `tips()`) and skipping rather than aborting the whole run.
+
+Re-running against the recovered production db (see below) surfaced a
+second, still-uninvestigated failure shape under the same resilience net:
+a handful of tickers raised a bare `TypeError` (not caught by the new
+`_load_tip()` validation, so likely a `None` in a bar's OHLC values
+rather than a tip field) -- logged and skipped correctly either way, but
+worth root-causing later.
+
+### Manual recovery incident: run_daily_update.sh's leftover-db recovery doesn't account for a different mode updating the remote (2026-10-08)
+**Problem:** the crash above left a local scratch db uncommitted to
+OneDrive (by design -- `run_daily_update.sh`'s `set -euo pipefail` aborts
+before the push step on any failure). Before it could be recovered, the
+*next morning's separate* `tips-only` run completed normally and pushed
+two new tips to the OneDrive db. At that point, `run_daily_update.sh`'s
+own "found a leftover local db from a previous run" recovery logic (see
+its own comments) would have blindly done `rclone copyto` of the stale
+local file over the now-newer remote one -- a whole-file overwrite, not a
+row-level merge -- silently destroying those two new tips (and, since
+their source emails were already marked `\Seen`, not trivially
+recoverable). The recovery logic's implicit assumption -- "the only thing
+that could have changed the remote since I last pulled is my own prior
+incomplete run" -- doesn't hold once multiple modes (`tips-only`/
+`daily-price`/`intraday-price`) can each independently update the same
+remote file.
+
+**Recovery performed manually instead of letting the automatic path run:**
+pulled the current (newer) remote db fresh, `ATTACH`ed the stale local
+scratch db, and copied only its `intraday_5m` rows in (`INSERT OR REPLACE
+... SELECT * FROM stale.intraday_5m`) -- preserving both the newer
+`tip_details`/`tip_exchange` state and the expensive intraday fetch work
+from the crashed run. Ran the now-fixed `update_outcomes()` against the
+merged result, then pushed. The stale scratch directory was then deleted
+so a future service start wouldn't re-trigger the unsafe automatic
+recovery against now-obsolete data.
+
+**Not yet fixed in `run_daily_update.sh` itself:** this was a one-off
+manual recovery, not a code change. The underlying gap -- the recovery
+branch doesn't check whether the remote has moved on for an unrelated
+reason before overwriting it -- is still there and would recur given the
+same bad-timing sequence (a run crashes before pushing, and a *different*
+mode's run completes and pushes in between). A real fix would need the
+recovery path to detect this (e.g. compare remote mtime/hash against what
+was pulled, or merge rather than overwrite) rather than assuming its own
+prior run is the only possible source of remote changes.
+
 ---
 
 ## tips_io design
