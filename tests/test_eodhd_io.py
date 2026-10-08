@@ -16,6 +16,7 @@ from src.eodhd_io import (
     Database,
     _eodhd_fetch_csv,
     _fetch_daily_resolved,
+    _fetch_intraday_resolved,
     _TransientEodhdResponse,
     add_local_time,
     add_ticker_alias,
@@ -124,6 +125,18 @@ def test_csv2pandas_intraday_has_no_local_time(sample_intraday_csv):
     see doc/DESIGN_DECISIONS.md, "local_time only ever added deliberately")."""
     pdf = csv2pandas_intraday("AAPL.US", sample_intraday_csv, "5m")
     assert "local_time" not in pdf.columns
+
+def test_csv2pandas_intraday_empty_response_raises_clear_error(tmp_path):
+    """A well-formed-but-empty EODHD response (e.g. a delisted ticker with
+    no ticker_aliases entry yet) used to reach pd.concat([]) in the padding
+    loop and fail with an opaque "No objects to concatenate" -- must now
+    raise a clear, specific error instead."""
+    empty_csv = tmp_path / "empty_intraday.csv"
+    pd.DataFrame(columns=[
+        "Timestamp", "Open", "High", "Low", "Close", "Volume", "Gmtoffset", "Datetime",
+    ]).to_csv(empty_csv, index=False)
+    with pytest.raises(ValueError, match="zero data rows"):
+        csv2pandas_intraday("AAPL.US", empty_csv, "5m")
 
 # --- Tests for pandas/polars round-trip ---
 def test_pandas_polars_roundtrip():
@@ -550,6 +563,71 @@ def test_fetch_daily_resolved_cash_out(mock_get_calendar, mock_fetch_daily, tmp_
     for i in (1, 2):
         assert result.iloc[i]["cl"] == 42.0
         assert result.iloc[i]["vo"] == 0
+
+
+# --- Tests for _fetch_intraday_resolved() (intraday equivalent of the above) ---
+def _intraday_row(code, ts, price, vo=100):
+    return pd.DataFrame({
+        "code": [code], "timestamp": [ts], "datetime": [pd.Timestamp(ts, unit="s")],
+        "local_date": [date(2026, 1, 5)],
+        "op": [price], "hi": [price], "lo": [price], "cl": [price], "vo": [vo],
+    })
+
+@mock.patch("src.eodhd_io.fetch_intraday")
+def test_fetch_intraday_resolved_no_alias_is_a_passthrough(mock_fetch_intraday, tmp_path):
+    mock_fetch_intraday.return_value = _intraday_row("X.US", 1000, 10.0)
+    with Database(tmp_path / "test.db") as db:
+        result = _fetch_intraday_resolved(db, "X.US", "tok", "5m", 1000, 2000)
+
+    mock_fetch_intraday.assert_called_once_with("X.US", "tok", "5m", from_ts=1000, to_ts=2000)
+    assert list(result["code"]) == ["X.US"]
+
+@mock.patch("src.eodhd_io.fetch_intraday")
+def test_fetch_intraday_resolved_splices_renamed_ticker_with_ratio(mock_fetch_intraday, tmp_path):
+    """Intraday equivalent of test_fetch_daily_resolved_splices_renamed_
+    ticker_with_ratio -- same behavior, timestamps instead of dates, no ac
+    column (intraday has none)."""
+    boundary_ts = int(datetime(2026, 1, 8).timestamp())
+
+    def fake_fetch(code, api_token, interval, from_ts=None, to_ts=None):
+        if code == "OLD.US":
+            return _intraday_row("OLD.US", boundary_ts - 500, 10.0, vo=100)
+        if code == "NEW.US":
+            return _intraday_row("NEW.US", boundary_ts + 500, 50.0, vo=200)
+        raise AssertionError(f"unexpected code {code}")
+    mock_fetch_intraday.side_effect = fake_fetch
+
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(
+            db, "OLD.US", date(2026, 1, 8), new_code="NEW.US", ratio=0.2, reason="test rename"
+        )
+        result = _fetch_intraday_resolved(
+            db, "OLD.US", "tok", "5m", boundary_ts - 1000, boundary_ts + 1000
+        )
+
+    calls = mock_fetch_intraday.call_args_list
+    assert len(calls) == 2
+    assert calls[0].args == ("OLD.US", "tok", "5m")
+    assert calls[0].kwargs == {"from_ts": boundary_ts - 1000, "to_ts": boundary_ts - 1}
+    assert calls[1].args == ("NEW.US", "tok", "5m")
+    assert calls[1].kwargs == {"from_ts": boundary_ts, "to_ts": boundary_ts + 1000}
+
+    assert list(result["code"]) == ["OLD.US", "OLD.US"]
+    assert result.iloc[0]["cl"] == 10.0  # pre-alias: untouched
+    assert result.iloc[1]["cl"] == pytest.approx(10.0)  # post-alias: 0.2 * 50.0
+    assert result.iloc[1]["vo"] == 200  # volume NOT rescaled
+
+def test_fetch_intraday_resolved_cash_out_not_implemented(tmp_path):
+    """Cash-for-scrip has no intraday equivalent (see
+    _fetch_intraday_resolved()'s docstring) -- must fail loudly, not
+    silently produce wrong or missing data."""
+    boundary_ts = int(datetime(2026, 1, 8).timestamp())
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "OLD.US", date(2026, 1, 8), cash_price=42.0, reason="test cash-out")
+        with pytest.raises(NotImplementedError, match="no intraday"):
+            _fetch_intraday_resolved(
+                db, "OLD.US", "tok", "5m", boundary_ts - 1000, boundary_ts + 1000
+            )
 
 # --- Hypothesis Test ---
 # CHANGED: the @given(...) strategy below used to be attached to a

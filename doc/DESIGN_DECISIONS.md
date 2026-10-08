@@ -445,7 +445,9 @@ amount with no successor security at all.
 ratio, cash_price, reason`, added/edited via `add_ticker_alias()`) plus
 `_fetch_daily_resolved()`, which `tips()`, `Database.fetch()`, and
 `Database.to_pandas()` now call instead of `fetch_daily()` directly for
-daily data. It resolves in one of two ways from `effective_date` onward:
+daily data (`_fetch_intraday_resolved()` is the intraday equivalent, added
+2026-10-08 -- see below). It resolves in one of two ways from
+`effective_date` onward:
 - **`new_code` set** (rename/split/merger): fetch `new_code`'s price
   series, multiply price columns (op/hi/lo/cl/ac -- not volume, see below)
   by `ratio`, and label the result `old_code`. Chains automatically (a
@@ -515,6 +517,48 @@ Seeded 2026-09-30 with the five researched cases: GMGI.US->MRDN.US (1.0),
 FDP.US->DMC.US (1.0), VSCO.US->VSXY.US (1.0), FLGC.US->ZSTK.US (1.0),
 LBRDA.US->CHTR.US (0.236) -- see doc/DELISTING_RESEARCH_2026-09-30.md for
 the full research and the price-continuity verification for each.
+
+### Extending ticker_aliases resolution to intraday (2026-10-08)
+**Problem:** alias resolution was daily-only by original design ("not
+needed by any current caller" -- true until `update_outcomes()` existed).
+The first real `intraday-price` run after `update_outcomes()` was wired in
+showed exactly why that stopped being true: the four aliased, delisted
+tickers (GMGI/FDP/VSCO/FLGC) still hit EODHD's "no data after delisting"
+response directly for *intraday* fetches, logged and skipped correctly by
+`tips()`'s per-tip resilience -- but with no alias resolution on this
+path, these tickers' `intraday_5m` coverage can never be filled in by any
+future run either. Since `outcomes`'s entry/exit trigger logic is entirely
+`intraday_5m`-based, that means their `outcomes` rows would stay `pending`
+*forever* -- not a cosmetic gap, a permanent dead end for those four tips
+specifically.
+
+**Decision:** `_fetch_intraday_resolved()`, the direct intraday mirror of
+`_fetch_daily_resolved()` -- same alias-chasing/splicing logic, Unix
+timestamps instead of dates for the boundary split. Wired into the same
+three places the daily version is: `tips()`'s intraday branch,
+`Database.fetch()` (only when both `from_ts`/`to_ts` are concrete, same
+reasoning as the daily `elif from_date and to_date` branch), and
+`Database.to_pandas()`'s intraday auto-fetch (always concrete there, no
+conditional needed).
+
+**Cash-for-scrip has no intraday equivalent, deliberately:**
+`_generate_cashout_rows()` produces one flat row per trading *session* --
+meaningless at 5-minute granularity, since a cashed-out position has no
+further price path to simulate at all, and `outcomes` has nothing left to
+detect for it once it's closed out. `_fetch_intraday_resolved()` raises
+`NotImplementedError` if this combination is ever actually hit, rather
+than silently returning wrong or no data. None of the five currently
+seeded aliases are cash-for-scrip, so this is unexercised in practice
+today, but kept as a loud guard rather than an assumption.
+
+**Also fixed in the same pass:** `csv2pandas_intraday()` now raises a
+clear `ValueError` naming the ticker when EODHD returns the right columns
+but zero data rows, instead of reaching `pd.concat([])` in the padding
+loop and failing with an opaque "No objects to concatenate". Kept as
+defense-in-depth alongside the alias fix -- a genuinely empty intraday
+response can still happen for reasons other than delisting (e.g. a too-new
+IPO with no intraday history yet), and this makes any future occurrence
+immediately diagnosable rather than another round of log archaeology.
 
 ### weekday/Saturday/Sunday split (2026-09-30)
 **Decision:** `daily_update.py` takes a required `--mode

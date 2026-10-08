@@ -375,6 +375,18 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
         missing = INTRADAY_CSV_COLUMNS - set(raw.columns)
         raise ValueError(f"Missing required columns in intraday CSV: {missing}")
 
+    # A response with the right header but zero data rows (e.g. EODHD has
+    # no intraday history at all for this ticker/window -- a delisted
+    # ticker with no ticker_aliases entry yet, or a too-new IPO) passed the
+    # columns check above but would otherwise reach pd.concat([]) in the
+    # padding loop below and fail with an opaque "No objects to
+    # concatenate", several lines removed from the real cause.
+    if raw.empty:
+        raise ValueError(
+            f"{code}: EODHD intraday response had the expected columns but "
+            f"zero data rows (no intraday history for this ticker/window)."
+        )
+
     # Check Gmtoffset
     if "Gmtoffset" in raw.columns and not (raw["Gmtoffset"] == 0).all():
         logging.warning(
@@ -925,6 +937,70 @@ def _fetch_daily_resolved(
     return pd.concat(segments, ignore_index=True).sort_values("date").reset_index(drop=True)
 
 
+def _fetch_intraday_resolved(
+    db: "Database",
+    code: str,
+    api_token: str,
+    interval: str,
+    from_ts: int,
+    to_ts: int,
+    _depth: int = 0,
+) -> pd.DataFrame:
+    """fetch_intraday(), but transparently follows ticker_aliases -- the
+    intraday equivalent of _fetch_daily_resolved(), see that function's
+    docstring for the full behavior. Mirrors it exactly, just working in
+    Unix timestamps instead of dates (the alias boundary, from_ts/to_ts
+    are all compared as timestamps computed the same naive/local way as
+    everywhere else in this module, so the comparisons stay internally
+    consistent even though that's not literally UTC midnight).
+
+    Cash-for-scrip aliases (new_code is None, _generate_cashout_rows()'s
+    case) have no intraday equivalent: that function produces one flat row
+    per trading *session*, which has no meaningful 5-minute analogue (no
+    real intraday price path exists for a position that no longer trades)
+    and isn't needed by any current caller -- a cashed-out position has no
+    further entry/exit to detect by the time its intraday window would
+    need this. Raises NotImplementedError rather than silently producing
+    wrong or no data if this combination is ever actually hit.
+    """
+    if _depth > 10:
+        raise ValueError(f"ticker_aliases chain too deep resolving {code} -- possible cycle?")
+
+    alias = _lookup_alias(db, code)
+    boundary_ts = (
+        int(datetime(
+            alias["effective_date"].year, alias["effective_date"].month,
+            alias["effective_date"].day,
+        ).timestamp())
+        if alias else None
+    )
+    if alias is None or to_ts < boundary_ts:
+        return fetch_intraday(code, api_token, interval, from_ts=from_ts, to_ts=to_ts)
+
+    if alias["new_code"] is None:
+        raise NotImplementedError(
+            f"{code}: cash-for-scrip ticker_aliases entry has no intraday "
+            f"equivalent (see _fetch_intraday_resolved()'s docstring)."
+        )
+
+    segments = []
+    if from_ts < boundary_ts:
+        segments.append(
+            fetch_intraday(code, api_token, interval, from_ts=from_ts, to_ts=boundary_ts - 1)
+        )
+
+    post_from = max(from_ts, boundary_ts)
+    post = _fetch_intraday_resolved(
+        db, alias["new_code"], api_token, interval, post_from, to_ts, _depth=_depth + 1
+    ).copy()
+    for col in ("op", "hi", "lo", "cl"):
+        post[col] = post[col] * alias["ratio"]
+    post["code"] = code
+    segments.append(post)
+
+    return pd.concat(segments, ignore_index=True).sort_values("timestamp").reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # NEW: tips()
 # ---------------------------------------------------------------------------
@@ -998,7 +1074,7 @@ def tips(
                 to_ts = int(
                     datetime(cal_end.year, cal_end.month, cal_end.day, 23, 59, 59).timestamp()
                 ) + 86400
-                pdf = fetch_intraday(code, db.api_token, interval, from_ts=from_ts, to_ts=to_ts)
+                pdf = _fetch_intraday_resolved(db, code, db.api_token, interval, from_ts, to_ts)
                 # Intentionally added here (not by fetch_intraday()/
                 # csv2pandas_intraday(), which deliberately omit it -- see
                 # doc/DESIGN_DECISIONS.md, "local_time is optional"): this is
@@ -1661,7 +1737,13 @@ class Database:
                 if to_date
                 else None
             )
-            pdf = fetch_intraday(code, token, interval, from_ts=from_ts, to_ts=to_ts)
+            if from_ts is not None and to_ts is not None:
+                pdf = _fetch_intraday_resolved(self, code, token, interval, from_ts, to_ts)
+            else:
+                # Same reasoning as the daily else-branch below: alias
+                # resolution needs concrete bounds to split at the
+                # boundary -- an open-ended fetch can't be resolved.
+                pdf = fetch_intraday(code, token, interval, from_ts=from_ts, to_ts=to_ts)
         elif from_date and to_date:
             pdf = _fetch_daily_resolved(self, code, token, from_date, to_date)
         else:
@@ -1737,8 +1819,8 @@ class Database:
                             fetch_end.year, fetch_end.month, fetch_end.day, 23, 59, 59
                         ).timestamp()
                     ) + 86400
-                    pdf = fetch_intraday(
-                        code, self.api_token, interval, from_ts=from_ts, to_ts=to_ts
+                    pdf = _fetch_intraday_resolved(
+                        self, code, self.api_token, interval, from_ts, to_ts
                     )
                 else:
                     pdf = _fetch_daily_resolved(self, code, self.api_token, start, fetch_end)

@@ -112,6 +112,10 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 - Pads missing bars (between first and last bar of each day) with zero
   volume, prices carried forward. Padding is per local trading day.
 - Does NOT pad between days — only within each day's first-to-last bar range.
+- Raises ValueError with a clear message if the response has the right
+  columns but zero data rows (e.g. no intraday history at all for this
+  ticker/window), rather than reaching `pd.concat([])` in the padding loop
+  below and failing with an opaque "No objects to concatenate".
 
 **add_local_time(pdf: pd.DataFrame) -> pd.DataFrame**
 - Intraday only. Raises ValueError on daily DataFrames.
@@ -278,7 +282,8 @@ connection for its lifetime.
   n_days uses _start_from_actual_dates (not _n_sessions_before) so half-days
   are counted correctly.
   Daily auto-fetches route through `_fetch_daily_resolved()` (ticker_aliases
-  resolution) rather than calling `fetch_daily()` directly.
+  resolution) rather than calling `fetch_daily()` directly; intraday
+  auto-fetches route through `_fetch_intraday_resolved()` the same way.
   code/start/end are all independently optional for a plain (non-fetching)
   read: `to_pandas(tablename)` with no other args returns the whole table.
   date_col (`date` vs `local_date`, needed when start/end are given) is
@@ -287,11 +292,13 @@ connection for its lifetime.
 - `to_polars(tablename, **kwargs)` — delegates to to_pandas
 - `to_csv(tablename, csv_path, **kwargs)`
 - `fetch(code, interval, tablename, from_date=None, to_date=None)`
-  Daily fetches also route through `_fetch_daily_resolved()`, but only when
-  both from_date and to_date are given — ticker_aliases resolution needs
-  concrete dates to split at the alias boundary, so an open-ended fetch
-  (from_date/to_date omitted, EODHD's own default window) falls back to a
-  plain `fetch_daily()` call instead.
+  Daily fetches route through `_fetch_daily_resolved()` and intraday
+  fetches through `_fetch_intraday_resolved()`, but only when both
+  from_date/to_date (daily) or both from_ts/to_ts (intraday) are given —
+  ticker_aliases resolution needs concrete bounds to split at the alias
+  boundary, so an open-ended fetch (dates omitted, EODHD's own default
+  window) falls back to a plain `fetch_daily()`/`fetch_intraday()` call
+  instead.
 - `_table_exists(tablename) -> bool`
 - `_date_range_in_table(tablename, code, is_daily) -> (date|None, date|None)`
 
@@ -318,9 +325,14 @@ connection for its lifetime.
   `ticker_aliases` boundary and resolves the post-boundary segment via
   `new_code` (price-scaled by `ratio`, recursing for chained renames) or
   `_generate_cashout_rows()`. Always returns a DataFrame labelled `code`
-  throughout, schema-identical to `fetch_daily()`'s own output. Daily only
-  — no intraday equivalent (not needed by any current caller). Volume is
+  throughout, schema-identical to `fetch_daily()`'s own output. Volume is
   not rescaled across an alias boundary.
+**_fetch_intraday_resolved(db, code, api_token, interval, from_ts, to_ts) -> pd.DataFrame**:
+  intraday equivalent of `_fetch_daily_resolved()` — same behavior, Unix
+  timestamps instead of dates. No cash-for-scrip equivalent (raises
+  `NotImplementedError` if a cash-out alias is ever hit at intraday
+  granularity — see `doc/DESIGN_DECISIONS.md`, "extending ticker_aliases
+  resolution to intraday").
 
 ### Known limitations / gaps
 
