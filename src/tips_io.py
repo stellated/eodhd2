@@ -311,6 +311,7 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
         "stop": None,
         "expected_reward": None,
         "expected_risk": None,
+        "expected_return": None,
         "holding_period_low": None,
         "holding_period_high": None,
         "url": url,
@@ -366,24 +367,51 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                     entry = re.sub(r'[^\d.]', '', txt)
                     result["stop"] = float(entry) if entry else None
 
-        # Exp. Reward / Exp. Risk / Hold Period: font-size: 20px paragraphs
+        # Exp. Reward / Exp. Risk / Exp. Return / Hold Period: originally a
+        # trio of font-size: 20px label/value pairs. The newsletter's
+        # template changed 2026-08-31 (see doc/DESIGN_DECISIONS.md,
+        # "newsletter template change 2026-08-31"): Reward/Risk moved into
+        # an 18px 4-column strip alongside a new Exp. Return and Trade R:R
+        # (Trade R:R not captured -- not asked for), and Hold Period moved
+        # out entirely into the Win Probability caption text. Checking both
+        # 20px and 18px here keeps pre-2026-08-31 archived emails parsing
+        # the same as before.
         for p in card_td.find_all("p", style=True):
-            if "20px" in p.get("style", ""):
+            style = p.get("style", "")
+            if "20px" in style or "18px" in style:
                 sib = p.find_next_sibling("p")
                 label = _clean(sib.get_text()) if sib else ""
                 txt = _clean(p.get_text())
-                if "EXP. REWARD" in label.upper():
+                label_u = label.upper()
+                if "EXP. REWARD" in label_u:
                     entry = re.sub(r'[^\d.]', '', txt)
                     result["expected_reward"] = float(entry) if entry else None
-                elif "EXP. RISK" in label.upper():
+                elif "EXP. RISK" in label_u:
                     entry = re.sub(r'[^\d.]', '', txt)
                     # Store as positive
                     result["expected_risk"] = abs(float(entry)) if entry else None
-                elif "HOLD PERIOD" in label.upper():
+                elif "EXP. RETURN" in label_u:
+                    # Net expectancy, can be negative -- keep the sign
+                    # (unlike expected_risk, which is always stored positive).
+                    entry = re.sub(r'[^\d.-]', '', txt)
+                    result["expected_return"] = float(entry) if entry else None
+                elif "HOLD PERIOD" in label_u:
                     m = re.match(r'(\d+)-(\d+)', txt)
                     if m:
                         result["holding_period_low"] = int(m.group(1))
                         result["holding_period_high"] = int(m.group(2))
+
+        if result["holding_period_low"] is None:
+            # 2026-08-31+ template: Hold Period is folded into the Win
+            # Probability caption ("Win Probability · 1-6d hold")
+            # instead of its own labeled pair -- fall back to a direct
+            # text scan for that fragment.
+            for p in card_td.find_all("p"):
+                m = re.search(r'(\d+)-(\d+)d\s*hold', _clean(p.get_text()), re.IGNORECASE)
+                if m:
+                    result["holding_period_low"] = int(m.group(1))
+                    result["holding_period_high"] = int(m.group(2))
+                    break
 
         # Score bars: four <p> tags with font-size: 13px font-weight: 700,
         # in order Pattern Quality, Setup, Risk/Reward, Context.
@@ -452,7 +480,16 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                             result["sector"] = text
                             break
 
-        # Reward/risk: shown as +$X.XX reward / -$X.XX risk in a single <p>
+        # Reward/risk: shown as +$X.XX reward / -$X.XX risk in a single <p>.
+        # Only present pre-2026-08-31 -- the newer template dropped the
+        # reward/risk breakdown for compact cards entirely, replacing it
+        # with a single net Exp. Return figure (see below) and an R:R
+        # ratio (not captured -- not asked for). Not recoverable by
+        # recomputing from entry/target/stop: these were the newsletter's
+        # own probability-weighted model output, confirmed by checking a
+        # worked example where the printed reward/risk didn't match any
+        # simple arithmetic difference of entry/target/stop. See
+        # doc/DESIGN_DECISIONS.md, "newsletter template change 2026-08-31".
         for p in card_td.find_all("p"):
             txt = _clean(p.get_text())
             if "reward" in txt.lower() and "risk" in txt.lower():
@@ -462,6 +499,16 @@ def _parse_tip_card(card_td, tip_n: int) -> dict:
                     result["expected_reward"] = float(reward_match.group(1))
                 if risk_match:
                     result["expected_risk"] = abs(float(risk_match.group(1)))  # Store as positive
+                break
+
+        # Exp. Return: "+$X.XX exp. return" (2026-08-31+ template only).
+        # The sign is omitted when the figure rounds to exactly $0.00
+        # (e.g. "$0.00 exp. return") -- sign is optional in the regex.
+        for p in card_td.find_all("p"):
+            txt = _clean(p.get_text())
+            m = re.search(r'([+-]?\$[\d.]+)\s*exp\.?\s*return', txt, re.IGNORECASE)
+            if m:
+                result["expected_return"] = float(m.group(1).replace('$', ''))
                 break
 
         # Holding period: just 1-9d in blue inline
@@ -599,6 +646,7 @@ def parse_tip_email(
         "stop",
         "expected_reward",
         "expected_risk",
+        "expected_return",
         "pattern_quality_score",
         "setup_score",
         "risk_reward_score",
@@ -658,6 +706,7 @@ CREATE TABLE IF NOT EXISTS {tablename} (
     stop REAL,
     expected_reward REAL,
     expected_risk REAL,
+    expected_return REAL,
     holding_period_low INTEGER,
     holding_period_high INTEGER,
     url TEXT,
@@ -686,6 +735,7 @@ _INSERT_TIP_DETAILS = """
 INSERT OR REPLACE INTO {tablename} (
     exchange, tip_date, tip_n, code, win_probability, sector, name,
     entry_zone_low, entry_zone_high, target, stop, expected_reward, expected_risk,
+    expected_return,
     holding_period_low, holding_period_high, url,
     pattern_quality_score, pattern_quality_colour,
     setup_score, setup_colour,
@@ -695,6 +745,7 @@ INSERT OR REPLACE INTO {tablename} (
 VALUES (
     :exchange, :tip_date, :tip_n, :code, :win_probability, :sector, :name,
     :entry_zone_low, :entry_zone_high, :target, :stop, :expected_reward, :expected_risk,
+    :expected_return,
     :holding_period_low, :holding_period_high, :url,
     :pattern_quality_score, :pattern_quality_colour,
     :setup_score, :setup_colour,
@@ -722,6 +773,14 @@ def tips_exchange2sqlite(
 
     db.conn.execute(_DDL_TIP_EXCHANGE.format(tablename=exchange_tablename))
     db.conn.execute(_DDL_TIP_DETAILS.format(tablename=tips_tablename))
+
+    # expected_return is part of _DDL_TIP_DETAILS above; this ALTER TABLE
+    # only fires for a tips table created before expected_return was added
+    # to that DDL (2026-10-09, see doc/DESIGN_DECISIONS.md, "newsletter
+    # template change 2026-08-31") -- harmless/skipped for a fresh table.
+    existing_cols = {row[1] for row in db.conn.execute(f"PRAGMA table_info({tips_tablename})")}
+    if "expected_return" not in existing_cols:
+        db.conn.execute(f"ALTER TABLE {tips_tablename} ADD COLUMN expected_return REAL")
 
     for row in exchange_df.itertuples(index=False):
         d = dict(row._asdict())
@@ -812,5 +871,16 @@ def tips_sqlite2pandas(
     for col in tip_int_cols:
         if col in tips_df.columns:
             tips_df[col] = tips_df[col].astype("Int64")
+
+    # A column that's entirely NULL within the fetched resultset (e.g.
+    # expected_return read back for a date range before the 2026-10-09
+    # newsletter-template fix, or expected_reward/expected_risk for a
+    # range where every tip happens to be a post-2026-08-31 compact card)
+    # comes back from pd.read_sql as object dtype (all None), not float64
+    # NaN -- force it back, same reasoning as tip_int_cols above.
+    tip_float_cols = ["expected_reward", "expected_risk", "expected_return"]
+    for col in tip_float_cols:
+        if col in tips_df.columns:
+            tips_df[col] = pd.to_numeric(tips_df[col], errors="coerce")
 
     return exchange_df, tips_df

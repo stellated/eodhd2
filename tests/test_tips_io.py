@@ -45,6 +45,39 @@ def test_parse_tip_email_june_2026():
         assert (scores >= 0).all()
         assert (scores <= CATEGORY_MAX[quality]).all()
 
+def test_parse_tip_email_august_2026_template_change():
+    # The newsletter changed its template 2026-08-31 (see
+    # doc/DESIGN_DECISIONS.md, "newsletter template change 2026-08-31"):
+    # full cards (tip_n 1-3) moved Hold Period out of its own labeled pair
+    # into the Win Probability caption, and moved Exp. Reward/Exp. Risk
+    # from a 20px pair to an 18px strip alongside a new Exp. Return. Both
+    # must still parse correctly under the new layout.
+    exchange_df, tips_df = parse_tip_email(Path("tests/data/eml/2026-08-31_Daily_Stock_Pick.eml"))
+    assert len(exchange_df) == 1
+    assert len(tips_df) == 20
+
+    full = tips_df.loc[tips_df["tip_n"] <= 3]
+    assert full["holding_period_low"].notna().all()
+    assert full["holding_period_high"].notna().all()
+    assert full["expected_reward"].notna().all()
+    assert full["expected_risk"].notna().all()
+    assert (full["expected_risk"] >= 0).all()  # always stored positive
+
+    # Full cards also show a new Exp. Return field alongside Reward/Risk.
+    assert full["expected_return"].notna().all()
+
+    # Compact cards (tip_n > 3): holding_period still works (unaffected --
+    # always derived from a plain "N-Md" fragment, wherever it sits in the
+    # card). expected_reward/expected_risk are gone from the newsletter
+    # entirely for compact cards -- not recoverable, must stay NaN. The
+    # new expected_return (the newsletter's net figure) is still shown and
+    # must be populated for every compact tip too.
+    compact = tips_df.loc[tips_df["tip_n"] > 3]
+    assert compact["holding_period_low"].notna().all()
+    assert compact["expected_reward"].isna().all()
+    assert compact["expected_risk"].isna().all()
+    assert compact["expected_return"].notna().all()
+
 ### **Colour Extraction Tests**
 
 def test_hex_to_int():
@@ -129,3 +162,21 @@ def test_parse_tip_card_compact():
     # test_parse_tip_email_june_2026 above.
     assert result["pattern_quality_score"] is not None
     assert 0 <= result["pattern_quality_score"] <= CATEGORY_MAX["pattern_quality"]
+
+def test_parse_tip_card_compact_exp_return_zero_has_no_sign():
+    # Found against a real 2026-09-08 email: when the net figure rounds to
+    # exactly $0.00, the newsletter omits the +/- sign entirely ("$0.00
+    # exp. return" instead of "+$0.00 exp. return") -- the regex must not
+    # require one.
+    html = """
+    <td style="border-bottom: 1px solid #f1f5f9;">
+        <a href="https://www.stockdataanalytics.com/news/rrbi-pattern-2026-09-08/">RRBI</a>
+        <p><span>$0.00</span> exp. return <span>|</span> <span>0.65:1</span> R:R
+        <span>|</span> <span>1-6d</span></p>
+    </td>
+    """
+    card_td = BeautifulSoup(html, "lxml").find("td")
+    result = _parse_tip_card(card_td, 4)
+    assert result["expected_return"] == 0.0
+    assert result["holding_period_low"] == 1
+    assert result["holding_period_high"] == 6

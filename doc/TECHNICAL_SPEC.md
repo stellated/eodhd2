@@ -401,14 +401,41 @@ Unique links are deduplicated by URL path (stripping query string).
 ### Full card fields extracted
 code (ticker + ".US"), url, name, sector, win_probability (int),
 entry_zone_low, entry_zone_high, target, stop (all float),
-expected_reward (float, positive), expected_risk (float, NEGATIVE),
-holding_period_low, holding_period_high (int),
-pattern_quality_score, setup_score, risk_reward_score, context_score (float),
-pattern_quality_colour, setup_colour, risk_reward_colour, context_colour (int 1-4)
+expected_reward (float, positive), expected_risk (float, positive),
+expected_return (float, signed), holding_period_low, holding_period_high
+(int), pattern_quality_score, setup_score, risk_reward_score,
+context_score (float), pattern_quality_colour, setup_colour,
+risk_reward_colour, context_colour (int 1-4)
+
+Since the newsletter's 2026-08-31 template change (see
+`doc/DESIGN_DECISIONS.md`, "newsletter template change 2026-08-31"),
+`expected_reward`/`expected_risk` come from an `18px` 4-column strip
+(Exp. Reward / Exp. Risk / Exp. Return / Trade R:R; `Trade R:R` not
+captured) rather than their original `20px` labeled pair -- both sizes
+are checked so pre-2026-08-31 archived emails still parse the same way.
+`holding_period_low`/`high` similarly try the original labeled pair
+first, falling back to a text-scan for "N-Md hold" folded into the Win
+Probability caption on/after that date.
 
 ### Compact card fields extracted
-Same fields EXCEPT: name is None. Order: PQ, Setup, R:R, Context.
-Reward/risk/hold come from a single metrics paragraph.
+Same fields EXCEPT: name is None, and (since 2026-08-31) expected_reward/
+expected_risk are always NULL -- the newsletter dropped that breakdown
+for compact cards entirely, replacing it with expected_return alone (see
+below). Order: PQ, Setup, R:R, Context. Pre-2026-08-31, reward/risk/hold
+came from a single metrics paragraph; the newsletter's own reward/risk
+figures are not recoverable by recomputing from entry/target/stop -- they
+were a probability-weighted model output, not simple arithmetic (verified
+against a worked pre-change example).
+
+### expected_return (added 2026-10-09)
+The newsletter's net expected-value figure, shown on both card formats
+since the 2026-08-31 template change (e.g. "Exp. Return" on full cards,
+"+$X.XX exp. return" on compact cards). Unlike `expected_risk`, the sign
+is kept (a net expectancy can legitimately be negative) -- except the
+newsletter itself omits the sign when the figure rounds to exactly $0.00
+("$0.00 exp. return", no leading `+`), so the parser's regex treats the
+sign as optional. NULL for every tip before 2026-08-31 (the newsletter
+didn't show it yet).
 
 The four `..._score` fields ARE populated for compact cards too (as of the
 2026-09-12 unification, see `doc/DESIGN_DECISIONS.md`) — but as an *estimate*

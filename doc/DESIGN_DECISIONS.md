@@ -854,15 +854,39 @@ merged result, then pushed. The stale scratch directory was then deleted
 so a future service start wouldn't re-trigger the unsafe automatic
 recovery against now-obsolete data.
 
-**Not yet fixed in `run_daily_update.sh` itself:** this was a one-off
-manual recovery, not a code change. The underlying gap -- the recovery
-branch doesn't check whether the remote has moved on for an unrelated
-reason before overwriting it -- is still there and would recur given the
-same bad-timing sequence (a run crashes before pushing, and a *different*
-mode's run completes and pushes in between). A real fix would need the
-recovery path to detect this (e.g. compare remote mtime/hash against what
-was pulled, or merge rather than overwrite) rather than assuming its own
-prior run is the only possible source of remote changes.
+**Fixed 2026-10-09:** `run_daily_update.sh` now snapshots `${RCLONE_REMOTE}`'s
+rclone `ModTime` into a sidecar file (`${DB_PATH}.pulled_modtime`, living
+in the same mode-specific `WORK_DIR` so it's cleaned up automatically on
+success) at pull time, and a new `safe_push()` re-checks the remote's
+current `ModTime` against that snapshot before *every* push -- both the
+leftover-recovery retry (the branch that actually caused the incident
+above) and the normal end-of-run push (the same race can happen there
+too: the Saturday/Sunday overlap case the mode-specific `WORK_DIR` split
+already anticipates means two sibling runs can genuinely have concurrent
+in-flight local copies). If the remote has moved since this run's own
+pull, the push is refused -- loud failure, `DB_PATH` left in place for
+manual merge -- rather than a silent overwrite.
+
+`rclone hashsum` was checked first and rejected: it comes back empty
+against this OneDrive remote for a recently-modified file (not computed
+server-side yet), so `ModTime` via `rclone lsjson` is the reliable signal
+here, not a hash. `remote_modtime()` also has to distinguish "doesn't
+exist yet" (`rclone`'s own exit codes 3/"Directory not found" and
+4/"File not found" -- a legitimate state on the very first-ever run)
+from "couldn't be reached at all" (any other nonzero exit, e.g. a real
+network failure) -- conflating the two would otherwise either abort
+every first-ever run for no reason, or silently treat a real connectivity
+failure as "safe to proceed." This doesn't attempt an automatic merge
+(that needs table-level knowledge, same reason the actual incident was
+recovered by hand with an `ATTACH`-based merge rather than scripted) --
+it only turns a silent destructive overwrite into a loud stop, which is
+exactly the outcome the manual recovery above already reached. Verified
+against a local fake remote (rclone also operates on plain filesystem
+paths) across all the relevant cases: first-ever run, normal recovery
+with the remote unchanged, the actual race (remote changed since pull --
+refuses, remote left untouched, leftover preserved), a leftover with no
+snapshot at all (a pre-fix leftover -- refuses rather than guessing), and
+an unreachable remote (refuses rather than guessing).
 
 ### outcomes only triggers on real-volume bars (2026-10-08)
 **Problem:** the second failure shape surfaced by the resilience fix above
@@ -1024,6 +1048,75 @@ produces zero warnings.
 pattern_quality_number, setup_number, risk_reward_number, context_number
 were None for compact cards; only bar colours were extracted, because the
 compact card format was believed not to encode a numeric score at all.
+
+### newsletter template change 2026-08-31
+**Problem:** `update_outcomes()`'s per-position resilience fix (see
+"outcomes design" above) was logging `tip_details` rows with NULL
+`holding_period_low`/`high` for every full-detail tip (`tip_n` 1-3) --
+54/90 at the time, growing to 168/276 by 2026-10-08. Investigating found a
+clean, 100% cutover at `tip_date = 2026-08-31` (0/6 NULL every day before,
+6/6 every day since, with no exceptions across 46 days) -- a template
+change, not an intermittent parsing bug. Pulled a real 2026-08-31 email
+(`--all-emails`, read-only against the mailbox) and found three changes,
+not one:
+- **Full cards:** Hold Period moved out of its own `20px` labeled pair
+  entirely, into the Win Probability caption text ("Win Probability ·
+  1-6d hold").
+- **Full cards:** Exp. Reward/Exp. Risk moved from that same `20px` pair
+  into a new `18px` 4-column strip (Exp. Reward / Exp. Risk / Exp. Return
+  / Trade R:R) -- still present and parseable, just at the font-size the
+  parser already used for Entry Zone/Target/Stop Loss, not the one it was
+  looking for. This one was invisible until now: nothing had surfaced it
+  as a NULL field anyone was checking for.
+- **Compact cards:** the reward/risk dollar breakdown is gone from the
+  newsletter *entirely*, replaced by a single net "Exp. Return" figure
+  and an R:R ratio (not captured -- not asked for). Confirmed this isn't
+  recoverable by recomputing from entry/target/stop: a worked pre-change
+  example's printed reward/risk didn't match any simple arithmetic
+  difference of entry/target/stop, confirming these were the newsletter's
+  own probability-weighted model output, now simply not printed anymore
+  for compact cards.
+- Compact cards' `holding_period` was unaffected throughout (always
+  derived from a plain "N-Md" fragment wherever it sits in the card).
+
+**Decision:**
+1. Full-card Hold Period: added a fallback text scan (`r'(\d+)-(\d+)d\s*
+   hold'`) used only when the original labeled-pair extraction finds
+   nothing -- keeps parsing pre-2026-08-31 archived emails identically.
+2. Full-card Exp. Reward/Exp. Risk: the existing `20px` label-matching
+   loop now also checks `18px` paragraphs. Checking both sizes (rather
+   than switching outright) keeps old archived emails working the same
+   way with no format-detection branch needed.
+3. Added `expected_return` as a new column (`tip_details`, migrated via
+   `ALTER TABLE ADD COLUMN` for an existing table -- same pattern as
+   `local_time`'s migration in `eodhd_io.py`) -- the newsletter still
+   prints this net figure for *both* card types post-2026-08-31, so it's
+   captured going forward even though it didn't exist before. Sign is
+   kept (unlike `expected_risk`, always positive by convention) since a
+   net expectancy can legitimately be negative. The newsletter omits the
+   sign character entirely when the figure rounds to exactly $0.00 ("$0.00
+   exp. return", no leading `+`) -- found by re-parsing the whole archive
+   and getting a non-zero NULL count on several post-cutover dates; the
+   regex's sign group is optional to handle this.
+4. Compact-card `expected_reward`/`expected_risk` are left NULL from
+   2026-08-31 onward, by design -- not a bug, the newsletter stopped
+   providing the data. `doc/LIMITATIONS.md` updated to document this
+   alongside the existing compact-card score-estimation caveat.
+
+**Verification:** re-parsed the entire 258-email archive (read-only
+re-download via `--all-emails`, not the production db) after the fix --
+zero NULL `holding_period`/`expected_reward` for any full-card tip across
+every date, zero NULL `expected_return` for any tip (full or compact)
+from 2026-08-31 onward, and the pre-2026-08-31 archive's values are
+byte-identical to before this change (same `expected_reward`/
+`expected_risk`/`holding_period` values, `expected_return` correctly NaN
+throughout since the newsletter didn't show it yet).
+
+**Not done:** `Trade R:R` (shown on both card types alongside Exp. Return)
+isn't captured -- wasn't asked for, and unlike Exp. Return it duplicates
+information already derivable from `entry_zone_low`/`target`/`stop`-style
+fields plus the already-separate `risk_reward_score` quality metric.
+Revisit if a future need for the newsletter's own literal ratio arises.
 
 ---
 

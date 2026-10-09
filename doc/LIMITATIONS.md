@@ -11,6 +11,21 @@
 ## 3. Email Format Fragility
 - The parser is tightly coupled to StockDataAnalytics’ HTML structure.
 - Format changes (e.g., April 2026 vs. June 2026) may require updates to `_parse_tip_card()`.
+- Confirmed again 2026-08-31: the newsletter changed its template (see
+  `doc/DESIGN_DECISIONS.md`, "newsletter template change 2026-08-31"),
+  silently NULLing `holding_period_low`/`high` and `expected_reward`/
+  `expected_risk` for every full-detail tip (tip_n 1-3) until caught by
+  `update_outcomes()`'s per-position error logging. Fixed, but the
+  underlying fragility is unchanged — a future template change would
+  silently NULL fields again until something downstream notices.
+- **Compact-card (tip_n 4-20) `expected_reward`/`expected_risk` are
+  permanently NULL from 2026-08-31 onward** — not a parser gap, the
+  newsletter stopped printing that breakdown for compact cards at all,
+  replacing it with a single net `expected_return` figure (added as a
+  new column) and an R:R ratio (not captured). Not recoverable by
+  recomputing from entry/target/stop — confirmed these were the
+  newsletter's own probability-weighted model output, not simple
+  arithmetic, by checking a worked pre-change example.
 
 ## 4. `Gmtoffset` Assumption
 - EODHD intraday CSVs assume `Gmtoffset=0` (UTC). If this changes, the code will log a warning.
