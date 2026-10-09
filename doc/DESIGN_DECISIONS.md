@@ -864,6 +864,84 @@ recovery path to detect this (e.g. compare remote mtime/hash against what
 was pulled, or merge rather than overwrite) rather than assuming its own
 prior run is the only possible source of remote changes.
 
+### outcomes only triggers on real-volume bars (2026-10-08)
+**Problem:** the second failure shape surfaced by the resilience fix above
+(a bare `TypeError`, not caught by `_load_tip()`'s validation) affected a
+dozen-plus tickers. Root-caused by querying `intraday_5m` directly and
+cross-checking a live EODHD fetch for the worst case (`WBD.US`, 156 NULL
+rows across two full sessions): EODHD itself returns rows with valid
+timestamps but blank OHLCV for stretches with no real trade -- not a
+parsing bug. A database-wide scan found this is systematic, not isolated:
+**435 (code, local_date) pairs** across the whole table have at least one
+NULL-OHLC bar, and **100% of them (435/435)** start their NULL run at
+exactly `09:30:00` (market open) -- consistent with thin opening liquidity
+on small/micro-cap tickers (this newsletter's usual universe), with
+`WBD.US`'s two-full-day case being an extreme version of the same thing
+rather than a separate cause. `csv2pandas_intraday()`'s per-day forward-
+fill (see "Padded rows use zero volume") has nothing to fill these leading
+gaps from within the same day, so they reach SQLite as `NULL` -- exactly
+what `_level_crossed()`'s price comparisons choked on.
+
+**Decision:** rather than just patching the `NULL`, asked what should
+actually happen here as a trading-logic question. Ian's answer, framed as
+"what would a minimum-viable-product trading robot actually do": **delay
+all trades until a bar with real volume appears.** A `vo == 0` bar --
+whether EODHD returned nothing for that slot or returned blank fields,
+both normalize to `vo == 0` in `csv2pandas_intraday()`, see "Padded rows
+use zero volume" -- represents no real executable price, synthetic or
+not, and should never be eligible to trigger an entry, a target/stop exit,
+or even a time-exit fill. `_check_pending()`/`_check_open()` now scan only
+`bars.filter(vo > 0)` for all three trigger types; `_check_open()`'s
+time-exit fills at the last *real* bar's close, and defers (stays `open`)
+rather than forcing a fill if no real bar has arrived since buy at all
+(an extended halt/illiquid stretch) -- consistent with "pending/open
+sitting unresolved indefinitely is expected, not an error" (see
+`unresolved_tips()`). Window-closing (`_entry_window_closed()`/
+`_time_exit_due()`) is unaffected -- still counts every calendar day
+actually present, real-volume or not, since that's a question of elapsed
+time, not of execution. This fixes the `TypeError` as a side effect of
+doing the financially-correct thing, not as a separate patch: a bar
+excluded from the trigger scan can never reach a price comparison, `NULL`
+or otherwise.
+
+**The look-ahead-bias question, resolved 2026-10-08:** Ian also asked
+whether the *padding value itself* for these gaps should change --
+specifically, whether the open of the first real-volume bar of the day is
+a better stand-in for the zero-turnover period than carrying forward
+yesterday's close, while flagging his own concern about "using future
+data." That concern is correct and is the standard objection: filling an
+*earlier* gap with a *later* bar's price is textbook look-ahead bias (the
+model would be informed, at 9:30, by a price that doesn't exist until
+whenever the first real trade actually prints) -- exactly the class of
+error point-in-time-correct backtesting exists to avoid. The existing,
+already-documented convention (forward-fill from the last known price --
+see "Padded rows use zero volume") is correct precisely because it's
+strictly backward-looking; the only gap was that it was scoped per-day,
+so a session's leading bars had nothing *within that day* to carry from.
+
+**Decision:** extend the forward-fill in `csv2pandas_intraday()` across
+day boundaries instead of switching to the first-real-trade's open. The
+per-day padding loop no longer calls `.ffill()` on `op`/`hi`/`lo`/`cl`
+inside the loop; each day's grid-merged frame (still built per-day, so no
+new timestamps are invented between days) is appended unfilled, then
+`.ffill()` is applied once across the full, chronologically-sorted
+concatenation (`days` is now explicitly `sorted(...)` to guarantee this).
+A day's leading gap now carries the previous trading day's last real
+close; only the very first bar of a ticker's entire fetched history (no
+earlier day to carry from at all) can still be `NULL` -- an unavoidable
+floor, not a bug, and covered by its own test
+(`test_csv2pandas_intraday_first_bar_ever_stays_null_if_blank`).
+
+No longer load-bearing for `outcomes` specifically -- padded bars are
+already unconditionally excluded from every trigger decision regardless
+of their fill value (see above) -- but this closes the gap for every
+other consumer of raw `intraday_5m` (charts, DB Browser, future code)
+that doesn't do its own `vo > 0` filtering, and it only applies to data
+fetched from now on: existing `NULL` rows already written to the
+production db before this fix stay `NULL` unless/until that date range is
+naturally re-fetched (e.g. via `_still_open_tips()`'s backfill window) --
+no retroactive backfill was run.
+
 ---
 
 ## tips_io design

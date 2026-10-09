@@ -226,6 +226,31 @@ def test_check_pending_stays_pending_if_window_still_open():
     result = _check_pending(pos, bars, tip)
     assert result == pos
 
+def test_check_pending_ignores_zero_volume_bar_touching_zone():
+    # A padded/no-trade bar (vo=0) sits inside the entry zone -- must not
+    # trigger entry. Only the later real-volume bar should.
+    tip = _tip()
+    pos = _pos()
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 10.2, 10.3, 10.1, 10.2, vo=0),
+        _bar(2, date(2026, 1, 5), "09:35:00", 10.8, 10.9, 10.2, 10.3, vo=500),
+    ])
+    result = _check_pending(pos, bars, tip)
+    assert result["status"] == "open"
+    assert result["buy_timestamp"] == 2
+
+def test_check_pending_ignores_zero_volume_bar_breaching_stop():
+    # A padded/no-trade bar (vo=0) dips below the stop -- must not abort.
+    # Window stays open (holding_period_low generous) since no real bar
+    # has triggered anything yet.
+    tip = _tip(holding_period_low=5)
+    pos = _pos()
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 8.0, 8.1, 7.9, 8.0, vo=0),
+    ])
+    result = _check_pending(pos, bars, tip)
+    assert result == pos
+
 
 # --- _check_open ----------------------------------------------------------
 
@@ -300,6 +325,49 @@ def test_check_open_stays_open_if_nothing_triggers():
     ])
     result = _check_open(pos, bars, tip)
     assert result == pos
+
+def test_check_open_ignores_zero_volume_bar_hitting_target():
+    # A padded/no-trade bar (vo=0) spikes through target -- must not exit.
+    tip = _tip()
+    pos = _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,
+                buy_price=10.5, risk_per_share=1.5)
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 10.5, 10.6, 10.4, 10.5),
+        _bar(2, date(2026, 1, 5), "09:35:00", 11.9, 12.1, 11.8, 12.0, vo=0),
+    ])
+    result = _check_open(pos, bars, tip)
+    assert result == pos
+
+def test_check_open_time_exit_deferred_with_no_real_bar_since_buy():
+    # Window has closed, but every bar since buy is zero-volume (an
+    # extended halt) -- don't force a time-exit fill onto a padded/NULL
+    # close; stay open and reconsider next call.
+    tip = _tip(holding_period_high=1)
+    pos = _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,
+                buy_price=10.5, risk_per_share=1.5)
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 10.5, 10.6, 10.4, 10.5, vo=0),
+        _bar(2, date(2026, 1, 6), "09:30:00", 10.5, 10.6, 10.4, 10.5, vo=0),
+        _bar(3, date(2026, 1, 7), "09:30:00", 10.5, 10.6, 10.4, 10.5, vo=0),  # day 2 -- due
+    ])
+    result = _check_open(pos, bars, tip)
+    assert result == pos
+
+def test_check_open_time_exit_uses_last_real_close_not_padded_close():
+    # The window's deadline bar itself is padded (vo=0, stale carried-
+    # forward close) -- the time exit should fill at the last *real*
+    # bar's close instead, not the padded one.
+    tip = _tip(holding_period_high=1)
+    pos = _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,
+                buy_price=10.5, risk_per_share=1.5)
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 10.5, 10.6, 10.4, 10.5),
+        _bar(2, date(2026, 1, 6), "09:30:00", 10.6, 10.8, 10.5, 10.65),
+        _bar(3, date(2026, 1, 7), "16:00:00", 10.99, 10.99, 10.99, 10.99, vo=0),  # padded
+    ])
+    result = _check_open(pos, bars, tip)
+    assert result["status"] == "closed_time"
+    assert result["sell_trigger_price"] == 10.65  # last real bar's close (bar 2), not bar 3's
 
 
 # --- _advance_position chaining -----------------------------------------

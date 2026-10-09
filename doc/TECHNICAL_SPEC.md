@@ -110,8 +110,16 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
   Datetime are dropped; all time info comes from Timestamp (Unix epoch).
 - Derives local_date from timestamp + exchange tz (ZoneInfo)
 - Pads missing bars (between first and last bar of each day) with zero
-  volume, prices carried forward. Padding is per local trading day.
-- Does NOT pad between days — only within each day's first-to-last bar range.
+  volume. Padding timestamps themselves are generated per local trading
+  day (does NOT invent timestamps between days), but price forward-fill
+  runs once across the full, chronologically-sorted result, not per day
+  — so a day's leading bar(s) (e.g. a blank-OHLC row from EODHD itself:
+  no real trade yet at market open) carry forward the previous trading
+  day's last real close, rather than being left NULL for having nothing
+  to fill from within that day alone (see doc/DESIGN_DECISIONS.md, "the
+  look-ahead-bias question, resolved 2026-10-08"). Only the very first
+  bar of a ticker's entire fetched history (no earlier day at all) can
+  still come out NULL.
 - Raises ValueError with a clear message if the response has the right
   columns but zero data rows (e.g. no intraday history at all for this
   ticker/window), rather than reaching `pd.concat([])` in the padding loop
@@ -222,18 +230,28 @@ design") for the full rationale behind every column and the status enum.
   `open` (entry zone touched) / `expired_unfilled` (window closed,
   neither happened) / stays `pending` (window still open).
 - `open` -> `closed_target` / `closed_stop` (same-bar collision: assumes
-  `closed_stop`, logs a warning) / `closed_time` (last available bar's
-  close) / stays `open`.
+  `closed_stop`, logs a warning) / `closed_time` (last available *real*
+  bar's close; deferred, stays `open`, if no real bar has arrived since
+  buy at all) / stays `open`.
 - Fill prices: `_level_crossed()`/`_zone_touched()` fill at the crossed
   level/boundary, or the bar's open if the bar gapped past it (gap
   direction is realistic, not symmetric -- see `doc/DESIGN_DECISIONS.md`).
   `_apply_slippage()` (flat `DEFAULT_SLIPPAGE_BPS`, a parameter so a
   volume-conditioned model can replace it later) is applied on top of
   every fill.
+- Every trigger check (`_check_pending()`/`_check_open()`, including the
+  time-exit fill) only considers `vo > 0` bars -- a zero-volume bar has no
+  real executable price to trigger against, whether EODHD never returned
+  a row for that slot or returned one with blank OHLC fields (both
+  normalize to `vo == 0` in `csv2pandas_intraday()`). "Delay all trades
+  until a bar with volume" -- see `doc/DESIGN_DECISIONS.md`, "outcomes
+  only triggers on real-volume bars".
 - Trading-day window boundaries (`_entry_window_closed()`/
   `_time_exit_due()`) count actual dates present in `intraday_5m`, not
   `exchange_calendars` sessions -- same half-day correctness as
-  `_start_from_actual_dates()`. `tip_date`/`buy_date` count as day 0.
+  `_start_from_actual_dates()`. `tip_date`/`buy_date` count as day 0. This
+  still counts every calendar day present regardless of real volume --
+  window-closing is a question of elapsed time, not of execution.
 - `_advance_position()` chains a position through multiple status
   transitions within one call (e.g. enter and exit within the same batch
   of new bars) via a `{status: checker}` dispatch table, so it never lags

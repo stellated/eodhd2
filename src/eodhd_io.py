@@ -406,7 +406,7 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
     raw = raw.drop(columns=["Timestamp", "Gmtoffset", "Datetime"])
 
     freq_seconds = int(pd.tseries.frequencies.to_offset(freq).nanos // 10**9)
-    days = raw["local_date"].unique()
+    days = sorted(raw["local_date"].unique())
     padded_frames = []
     for day in days:
         day_df = raw[raw["local_date"] == day].copy()
@@ -422,12 +422,21 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
         merged = grid.merge(
             day_df[["timestamp", "op", "hi", "lo", "cl", "vo"]], on="timestamp", how="left"
         )
-        for col in ["op", "hi", "lo", "cl"]:
-            merged[col] = merged[col].ffill()
         merged["vo"] = merged["vo"].fillna(0).astype("int64")
         padded_frames.append(merged)
 
+    # ffill across the concatenated, chronologically-sorted result (not
+    # per-day) so a day's leading gap (e.g. thin opening liquidity -- no
+    # trade yet when the market opens) carries forward the previous
+    # trading day's last real close, rather than staying NULL for having
+    # nothing to fill from within that day alone. Only the very first bar
+    # of a ticker's entire fetched history has nothing to carry from and
+    # stays NaN -- see doc/DESIGN_DECISIONS.md, "outcomes only triggers on
+    # real-volume bars" for why this is now a display/data-quality
+    # concern, not a trigger-correctness one.
     result = pd.concat(padded_frames, ignore_index=True)
+    for col in ["op", "hi", "lo", "cl"]:
+        result[col] = result[col].ffill()
     result["code"] = code
     cols = ["code", "timestamp", "datetime", "local_date", "op", "hi", "lo", "cl", "vo"]
     rval = result[cols].reset_index(drop=True)
@@ -1337,8 +1346,18 @@ def _check_pending(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
     code from tip_date onward. Checks, in order: a stop breach before ever
     entering -> aborted; the entry zone touched -> open (buy_* fields
     populated); the entry window closing with neither -> expired_unfilled.
+
+    Trigger checks only ever consider vo > 0 bars -- a zero-volume bar (no
+    real trade happened: EODHD either returned nothing for that slot, or
+    returned blank OHLC fields, both normalized to vo=0 in
+    csv2pandas_intraday()) has no real price to trigger against, only a
+    padded/forward-filled or NULL one. "Delay all trades until a bar with
+    volume" -- see doc/DESIGN_DECISIONS.md, "outcomes only trigger on
+    real-volume bars". Window-closing (_entry_window_closed below) still
+    counts every calendar day present, real-volume or not -- that's a time
+    question, not an execution one.
     """
-    for bar in bars.iter_rows(named=True):
+    for bar in bars.filter(pl.col("vo") > 0).iter_rows(named=True):
         breached, _ = _level_crossed(bar, tip["stop"], direction="down")
         if breached:
             return {**pos, "status": "aborted"}
@@ -1364,8 +1383,16 @@ def _check_open(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
     """pos currently 'open'. `bars` is every intraday_5m row for this code
     from buy_timestamp onward (inclusive) -- so same-bar entry+exit is
     possible; logged, not prevented, to see how often it actually happens.
+
+    Trigger checks and the time-exit fill only ever consider vo > 0 bars --
+    same "delay all trades until a bar with volume" reasoning as
+    _check_pending() above. If the window has closed but no real-volume bar
+    has arrived since buy (an extended halt/illiquid stretch), the time exit
+    is deferred rather than forced onto a padded/NULL close -- stays 'open'
+    and is reconsidered next call.
     """
-    for bar in bars.iter_rows(named=True):
+    real_bars = bars.filter(pl.col("vo") > 0)
+    for bar in real_bars.iter_rows(named=True):
         hit_target, fill_t = _level_crossed(bar, tip["target"], direction="up")
         hit_stop, fill_s = _level_crossed(bar, tip["stop"], direction="down")
         if hit_target and hit_stop:
@@ -1383,8 +1410,8 @@ def _check_open(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
             sell_type = "closed_target" if hit_target else "closed_stop"
             fill = fill_t if hit_target else fill_s
             return {**pos, "status": sell_type, **_sell_fields(bar, fill, pos)}
-    if _time_exit_due(pos, tip, bars):
-        last_bar = bars.row(-1, named=True)
+    if _time_exit_due(pos, tip, bars) and not real_bars.is_empty():
+        last_bar = real_bars.row(-1, named=True)
         return {
             **pos, "status": "closed_time",
             **_sell_fields(last_bar, last_bar["cl"], pos),

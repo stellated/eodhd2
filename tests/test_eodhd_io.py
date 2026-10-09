@@ -138,6 +138,58 @@ def test_csv2pandas_intraday_empty_response_raises_clear_error(tmp_path):
     with pytest.raises(ValueError, match="zero data rows"):
         csv2pandas_intraday("AAPL.US", empty_csv, "5m")
 
+def test_csv2pandas_intraday_forward_fills_across_day_boundary(tmp_path):
+    """A day's leading bar(s) can have blank OHLC (EODHD returned the row,
+    but no real trade happened yet -- see doc/DESIGN_DECISIONS.md, "outcomes
+    only triggers on real-volume bars") with nothing *within that day* to
+    forward-fill from. The fill must still happen, carried over from the
+    previous day's last real close -- not left NULL."""
+    day1_ts = int(datetime(2026, 1, 5, 14, 30, 0, tzinfo=timezone.utc).timestamp())  # 09:30 EST
+    day2_open_ts = day1_ts + 86400  # same local time, next trading day
+    day2_next_ts = day2_open_ts + 300  # one 5-minute slot later
+
+    df = pd.DataFrame({
+        "Timestamp": [day1_ts, day2_open_ts, day2_next_ts],
+        "Open":   [10.0, None, 12.0],
+        "High":   [10.5, None, 12.5],
+        "Low":    [9.5,  None, 11.5],
+        "Close":  [10.2, None, 12.2],
+        "Volume": [1000, None, 2000],
+        "Gmtoffset": [0, 0, 0],
+        "Datetime": ["2026-01-05 14:30:00", "2026-01-06 14:30:00", "2026-01-06 14:35:00"],
+    })
+    csv_path = tmp_path / "gap_at_open.csv"
+    df.to_csv(csv_path, index=False)
+
+    pdf = csv2pandas_intraday("AAPL.US", csv_path, "5m")
+
+    gap_row = pdf[pdf["timestamp"] == day2_open_ts].iloc[0]
+    assert gap_row["cl"] == 10.2  # carried forward from day 1's last real close
+    assert gap_row["vo"] == 0
+
+    real_row = pdf[pdf["timestamp"] == day2_next_ts].iloc[0]
+    assert real_row["cl"] == 12.2  # unaffected, real data
+
+def test_csv2pandas_intraday_first_bar_ever_stays_null_if_blank(tmp_path):
+    """The very first bar of a ticker's entire fetched history has no
+    earlier day to carry a price from -- forward-fill has a floor, this is
+    the one case that still can't be filled."""
+    df = pd.DataFrame({
+        "Timestamp": [1609459200, 1609459260],
+        "Open": [None, 100.5], "High": [None, 101.5],
+        "Low": [None, 100.0], "Close": [None, 101.0],
+        "Volume": [None, 1200000],
+        "Gmtoffset": [0, 0],
+        "Datetime": ["2021-01-01 00:00:00", "2021-01-01 00:01:00"],
+    })
+    csv_path = tmp_path / "no_prior_day.csv"
+    df.to_csv(csv_path, index=False)
+
+    pdf = csv2pandas_intraday("AAPL.US", csv_path, "1m")
+
+    assert pd.isna(pdf.iloc[0]["cl"])
+    assert pdf.iloc[1]["cl"] == 101.0
+
 # --- Tests for pandas/polars round-trip ---
 def test_pandas_polars_roundtrip():
     """Test round-trip: pandas -> polars -> pandas."""
