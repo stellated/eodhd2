@@ -644,6 +644,34 @@ didn't require a second mailbox/forwarding setup. `mars`'s own scheduled
 runs are unaffected -- the flag defaults off, so `unseen_only=True` and
 `mark_seen=True` there, unchanged.
 
+### What's reconstructable from git vs. host-specific (2026-10-11)
+**Context:** after `mars` was resized (more disk/RAM, same disk contents),
+Ian asked whether `rclone.conf` should be copied into `ops/` as an
+`.example`/`.copy` file, the same way the six systemd unit files got
+`.example` templates (see "weekday/Saturday/Sunday split" above) once it
+was noticed they weren't tracked.
+
+**Decision:** no -- `.venv`'s requirements.txt-driven dependencies and the
+systemd units' absolute-paths-and-username are both safe to template or
+regenerate, but `~/.config/rclone/rclone.conf` (outside the repo entirely)
+holds a live OneDrive OAuth `token` (access/refresh token, not a
+placeholder-safe value) -- copying it anywhere, even redacted-and-renamed,
+multiplies where a real credential can leak from. A redacted copy would
+just be documentation of the file's shape, which a sentence here already
+covers without ever duplicating the token.
+
+**What to do instead on a genuinely fresh machine** (not just a resize,
+which keeps the existing disk/home intact and needs none of this):
+- `.venv`: `python -m venv .venv && .venv/bin/pip install -r
+  requirements.txt` -- fully reconstructable from tracked files.
+- `ops/*.service`/`*.timer`/`daily-update.env`: copy from the matching
+  `.example` file and edit the host-specific values (username, absolute
+  path, `WORK_DIR`/`RCLONE_REMOTE`).
+- `rclone.conf`: not reconstructable from this repo at all -- run `rclone
+  config` and go through OneDrive's interactive OAuth flow again. This is
+  the one piece of this pipeline's setup that's genuinely manual every
+  time.
+
 ---
 
 ## outcomes design (2026-10-07)
