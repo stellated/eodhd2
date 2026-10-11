@@ -1,0 +1,30 @@
+# Copy to ops/eodhd-daily-update.timer (drop the .example), then symlink
+# or copy into /etc/systemd/system/ and `systemctl enable --now`. No
+# host-specific paths in here (unlike the matching .service file) -- this
+# is gitignored alongside it mainly so the set stays together, and because
+# OnCalendar= below assumes this VM's local timezone (check `timedatectl`
+# on a new host and adjust the time if it's not America/New_York).
+
+[Unit]
+Description=Run eodhd-daily-update (tips-only) on weekdays
+
+[Timer]
+# Weekdays only -- Saturday/Sunday are handled by the separate
+# eodhd-daily-update-1d.timer / eodhd-daily-update-5m.timer, which also
+# fetch price data (daily bars / 5m intraday respectively). Price fetching
+# is deliberately NOT done here on weekdays -- see doc/DESIGN_DECISIONS.md
+# ("weekday/Saturday/Sunday split"); a weekday priority-ticker fetch is
+# planned but not yet built.
+#
+# Fires in the server's local time (this VM is set to America/New_York --
+# check `timedatectl` if that ever changes, and adjust this value
+# accordingly). 04:00 ET runs after the tip newsletter's daily email (which
+# arrives a few hours before the 9:30am ET market open) and before the open
+# itself, since the email's entry-price recommendation is for that same
+# trading day.
+OnCalendar=Mon,Tue,Wed,Thu,Fri *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

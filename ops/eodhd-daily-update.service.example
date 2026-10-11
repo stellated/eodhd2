@@ -1,0 +1,17 @@
+# Copy to ops/eodhd-daily-update.service (drop the .example), edit the
+# User=/WorkingDirectory=/ExecStart= paths for this machine, then symlink
+# or copy into /etc/systemd/system/ and `systemctl enable --now`.
+# Gitignored because of those host-specific absolute paths -- see
+# doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split").
+
+[Unit]
+Description=EODHD weekday tip email capture (no price fetch)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Change this to the account that owns the repo checkout and rclone config.
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/repos/eodhd2
+ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/run_daily_update.sh tips-only

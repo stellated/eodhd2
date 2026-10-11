@@ -1,0 +1,25 @@
+# Copy to ops/eodhd-daily-update-1d.timer (drop the .example), then
+# symlink or copy into /etc/systemd/system/ and `systemctl enable --now`.
+# No host-specific paths in here (unlike the matching .service file) --
+# this is gitignored alongside it mainly so the set stays together, and
+# because OnCalendar= below assumes this VM's local timezone (check
+# `timedatectl` on a new host and adjust the time if it's not
+# America/New_York).
+
+[Unit]
+Description=Run eodhd-daily-update (daily-price) on Saturdays
+
+[Timer]
+# Saturday only. Markets are closed and Friday's (and the whole week's)
+# daily bars are published by EODHD well before this runs, so this is the
+# natural day for the weekly daily-OHLCV catch-up -- see
+# doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split"). Same 04:00 ET
+# timing as the weekday tips-only run for consistency; there's no
+# before-market-open constraint on a non-trading day, so this could move if
+# it ever needs to.
+OnCalendar=Sat *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
