@@ -1,0 +1,19 @@
+# Copy to ops/eodhd-disk-space-alert.timer (drop the .example), then
+# symlink or copy into /etc/systemd/system/ and `systemctl enable --now`.
+# No host-specific paths in here (unlike the matching .service file) --
+# this is gitignored alongside it mainly so the set stays together.
+
+[Unit]
+Description=Run eodhd-disk-space-alert hourly
+
+[Timer]
+# Hourly, independent of the data pipeline's own schedule -- disk
+# exhaustion is a host-health concern that should be caught quickly, and
+# needs to keep being checked even if the data pipeline itself can't run
+# because of it. See doc/DESIGN_DECISIONS.md ("disk-space alert").
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

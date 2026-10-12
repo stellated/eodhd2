@@ -1,0 +1,16 @@
+# Copy to ops/eodhd-disk-space-alert.service (drop the .example), edit
+# the User=/ExecStart= paths for this machine, then symlink or copy into
+# /etc/systemd/system/ and `systemctl enable --now
+# eodhd-disk-space-alert.timer`. Gitignored because of those host-specific
+# absolute paths -- see doc/DESIGN_DECISIONS.md ("disk-space alert").
+
+[Unit]
+Description=Alert if spare disk space on this VM drops below threshold
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Change this to the account that owns the repo checkout.
+User=YOUR_USERNAME
+ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/check_disk_space.sh

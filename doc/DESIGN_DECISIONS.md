@@ -672,6 +672,96 @@ which keeps the existing disk/home intact and needs none of this):
   the one piece of this pipeline's setup that's genuinely manual every
   time.
 
+### Weekly db snapshots + retention (2026-10-11)
+**Problem:** Ian had been manually making a dated copy of the remote db
+(`sda.db` -> `sda.2026-10-05.db`, etc., directly on OneDrive, next to the
+canonical file) from time to time, for later comparison via
+`scripts/compare_db.py`-style work, and manually deleting old ones. Doing
+this by hand against the live production file is exactly the kind of
+"fat finger" risk `safe_push()` was built to guard the *normal* push
+path against -- a manual `rclone` command against the wrong path, run
+half-asleep, has no equivalent safety net.
+
+**Decision:** `run_daily_update.sh` now does this itself,
+automatically, in a new `snapshot_and_prune()` function called once at
+the end of a successful `intraday-price` run (i.e. "after each Sunday
+run" -- `intraday-price` is this codebase's existing operational
+definition of Sunday, see "weekday/Saturday/Sunday split" above):
+- **Snapshot:** derives the dated filename from `RCLONE_REMOTE` itself
+  (split into `<base>`/`<ext>`, insert today's date --
+  `sda.db` -> `sda.2026-10-11.db`) and `rclone copyto`s between two paths
+  on the *same* remote. Both source and destination being on one OneDrive
+  remote means rclone performs this server-side -- no multi-hundred-MB
+  round trip through the VM, unlike a naive download-then-reupload.
+- **Prune:** lists the same remote folder and deletes any file matching
+  exactly `<base>.<yyyy-mm-dd>.<ext>` (using the *same* `<base>`/`<ext>`
+  just derived, not a hardcoded `sda`/`db`) whose date is more than
+  `SNAPSHOT_RETENTION_DAYS` (default 28, overridable via the environment
+  the same way `RCLONE_REMOTE`/`WORK_DIR` already are) days old. A file
+  that doesn't match that exact shape -- including anything deliberately
+  renamed -- is never a deletion candidate, even if it still has an old
+  date somewhere in its name, per Ian's explicit requirement.
+- Age comparison uses the venv Python's `datetime` (`.venv/bin/python -c
+  "..."`) rather than `date -d`/`date -v`, which differ between GNU/Linux
+  and BSD/macOS -- this script already runs on both `mars` and (per
+  "--all-emails for a second independent consumer" above) a planned Mac
+  checkout, so date-math needed to be portable, not just correct on
+  `mars`.
+- Both steps log and continue (not `exit 1`) on failure -- unlike
+  `safe_push()`'s deliberate hard-stop (an overwrite there is
+  destructive), a missed snapshot or a missed prune this week is just
+  retried automatically next week, not data loss.
+
+**Why this needs no Mac-specific code at all:** everything is derived
+from `RCLONE_REMOTE`, which is already a per-machine value read from
+`ops/daily-update.env`. Whenever the Mac's own env file points at its own
+OneDrive path (already planned, see "--all-emails" above), the exact same
+convention applies there automatically the first time it runs
+`intraday-price` -- there is nothing to port or duplicate.
+
+**Verified** against a local fake rclone remote (same technique used to
+verify `safe_push()`): a snapshot is created and named correctly; files
+40 and 29 days old are pruned; a file exactly 28 days old survives
+(strictly `> 28`, not `>=`); a renamed file and a same-date file with a
+different extension are both left alone; an unreachable remote directory
+logs a warning and exits 0 rather than aborting the run.
+
+### Disk-space alert (2026-10-11)
+**Problem:** disk exhaustion on `mars` (see the swap/journal/disk
+cleanup work earlier this week) had no automated warning -- it was only
+ever noticed because Ian or an investigation happened to run `df` by
+hand.
+
+**Decision:** a new, separate script (`ops/check_disk_space.sh`) and its
+own systemd timer (`eodhd-disk-space-alert.timer`, hourly, independent
+of `run_daily_update.sh`'s schedule), rather than folding this into the
+data pipeline:
+- Disk-space monitoring is a host-health concern, not a data-pipeline
+  one -- tying it to `run_daily_update.sh` would mean it only gets
+  checked 3x/week, and specifically *wouldn't* fire in the one scenario
+  that matters most (the pipeline itself can't run *because* the disk is
+  full).
+- Checks `df`-reported available bytes on `/` against
+  `DISK_ALERT_THRESHOLD_BYTES` (default 1 GiB, overridable). Below
+  threshold, it alerts via the *same* channel already used for stock
+  price alerts: `~/repos/alerts/src/notifier.py`'s existing
+  `send_sms()`/`send_email()` (SMS first so a failure can be reported in
+  the email -- mirroring that module's own `notify_alerts()`), invoked
+  by shelling into that project's own `.venv` with `PYTHONPATH=src` and
+  its own `.env`/cwd for credentials, so `eodhd2` never imports or
+  duplicates `alerts`' code or secrets -- it's a black-box reuse of an
+  existing, already-trusted delivery path, not a second alerting system.
+- Deliberately only `-VM`-scoped (Ian's own wording) -- no Mac
+  equivalent needed, so (unlike `snapshot_and_prune()`) no GNU/BSD `df`
+  portability concern applies here.
+- No throttling/dedup: every hourly check below threshold sends another
+  alert. Not implemented speculatively -- revisit if repeated alerts
+  during a sustained low-disk period turn out to be a nuisance in
+  practice.
+- Like the other systemd units, `eodhd-disk-space-alert.service`/`.timer`
+  are gitignored (`User=`, absolute paths) with `.example` templates
+  tracked instead.
+
 ---
 
 ## outcomes design (2026-10-07)

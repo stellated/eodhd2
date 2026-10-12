@@ -558,6 +558,20 @@ part needed to score the tip's outcome) would never get filled in. See
 the full rationale, including why this uses a calendar-day cutoff rather than
 checking actual row coverage in the price table.
 
+### Weekly db snapshots and the disk-space alert (added 2026-10-11)
+After a successful `intraday-price` run, `run_daily_update.sh` also takes a
+dated snapshot of the pushed db directly on the remote (server-side
+`rclone copyto`, e.g. `sda.db` → `sda.2026-10-11.db`) and prunes snapshots
+older than `SNAPSHOT_RETENTION_DAYS` (default 28). See
+`doc/DESIGN_DECISIONS.md` ("Weekly db snapshots + retention") for the exact
+matching/pruning rules and why this is safe to automate.
+
+Disk-space monitoring is a separate concern, on its own hourly systemd timer
+(`eodhd-disk-space-alert.timer` → `ops/check_disk_space.sh`), not tied to
+this script's schedule — see `doc/DESIGN_DECISIONS.md` ("disk-space alert").
+It alerts via `~/repos/alerts`' existing email/SMS notifier when free space
+on `/` drops below 1 GiB.
+
 ## Dependencies
 
 ```

@@ -13,8 +13,13 @@
 # Config comes from ops/daily-update.env (copy daily-update.env.example and
 # edit it for this machine) or environment overrides.
 #
+# After a successful intraday-price run, also takes a dated snapshot of
+# the pushed db on the remote and prunes snapshots older than
+# SNAPSHOT_RETENTION_DAYS -- see snapshot_and_prune() below and
+# doc/DESIGN_DECISIONS.md ("weekly db snapshots + retention").
+#
 # Requires jq (in addition to rclone) -- used by safe_push()'s remote
-# staleness check below.
+# staleness check and snapshot_and_prune()'s pruning logic below.
 set -euo pipefail
 
 MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price> [extra args]}"
@@ -24,6 +29,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 RCLONE_REMOTE="${RCLONE_REMOTE:-onedrive:eodhd/prod.db}"
 WORK_DIR="${WORK_DIR:-/var/tmp/eodhd-daily-update}"
+
+# How long a weekly dated snapshot (see snapshot_and_prune() below) is kept
+# before being pruned.
+SNAPSHOT_RETENTION_DAYS="${SNAPSHOT_RETENTION_DAYS:-28}"
 
 if [ -f "${REPO_DIR}/ops/daily-update.env" ]; then
     # shellcheck disable=SC1091
@@ -106,6 +115,68 @@ safe_push() {
     rclone copyto "${DB_PATH}" "${RCLONE_REMOTE}"
 }
 
+# Keeps a dated snapshot of ${RCLONE_REMOTE} next to it on the remote
+# (e.g. sda.db -> sda.2026-10-11.db), and prunes snapshots older than
+# ${SNAPSHOT_RETENTION_DAYS} days. Only called after intraday-price (see
+# the mode check at the bottom of this script) -- "after each Sunday run"
+# in doc/DESIGN_DECISIONS.md ("weekly db snapshots + retention").
+#
+# The copy is between two paths on the same rclone remote, so rclone does
+# it server-side on OneDrive -- no multi-hundred-MB round trip through
+# this VM. Driven entirely by ${RCLONE_REMOTE} (already per-machine), so
+# the same convention applies automatically wherever this script runs
+# (mars today, a future Mac remote tomorrow) with no machine-specific code.
+#
+# A failure here is logged and swallowed, not fatal -- unlike safe_push(),
+# a missed snapshot/prune this week is recoverable next week, not
+# destructive.
+snapshot_and_prune() {
+    local remote_dir remote_file base ext today snapshot_name snapshot_path
+    remote_dir="${RCLONE_REMOTE%/*}"
+    remote_file="${RCLONE_REMOTE##*/}"
+    ext="${remote_file##*.}"
+    base="${remote_file%.*}"
+    today="$(date +%F)"
+    snapshot_name="${base}.${today}.${ext}"
+    snapshot_path="${remote_dir}/${snapshot_name}"
+
+    echo "[daily-update] snapshotting ${RCLONE_REMOTE} -> ${snapshot_path}"
+    if ! rclone copyto "${RCLONE_REMOTE}" "${snapshot_path}"; then
+        echo "[daily-update] WARNING: snapshot copy failed -- continuing (not fatal, will retry next week)" >&2
+        return
+    fi
+
+    echo "[daily-update] pruning snapshots older than ${SNAPSHOT_RETENTION_DAYS} days in ${remote_dir}"
+    local listing
+    if ! listing="$(rclone lsjson "${remote_dir}" 2>/dev/null)"; then
+        echo "[daily-update] WARNING: could not list ${remote_dir} for pruning -- skipping" >&2
+        return
+    fi
+    local name date_part
+    while IFS= read -r name; do
+        [ -z "${name}" ] && continue
+        # Only a filename that's exactly <base>.<yyyy-mm-dd>.<ext> is ever
+        # a candidate -- a file renamed to anything else (even if it still
+        # has an old date in it) is deliberately left alone.
+        if [[ "${name}" =~ ^${base}\.([0-9]{4}-[0-9]{2}-[0-9]{2})\.${ext}$ ]]; then
+            date_part="${BASH_REMATCH[1]}"
+            # Age check via Python's date math (not `date -d`/`date -v`,
+            # which differ between GNU/Linux and BSD/macOS -- this script
+            # runs on both) using the venv Python this script already
+            # requires.
+            if ! "${REPO_DIR}/.venv/bin/python" -c "
+import datetime, sys
+d = datetime.date.fromisoformat(sys.argv[1])
+sys.exit(0 if (datetime.date.today() - d).days > int(sys.argv[2]) else 1)
+" "${date_part}" "${SNAPSHOT_RETENTION_DAYS}"; then
+                continue
+            fi
+            echo "[daily-update] deleting old snapshot ${name}"
+            rclone deletefile "${remote_dir}/${name}" || echo "[daily-update] WARNING: failed to delete ${name}" >&2
+        fi
+    done < <(echo "${listing}" | jq -r '.[].Name')
+}
+
 # If a previous run got as far as updating the local db but failed to push
 # it back (network blip, OneDrive hiccup, etc.), it deliberately left the
 # local copy in place rather than deleting it. Recover that first, so a
@@ -137,6 +208,10 @@ fi
 
 echo "[daily-update] pushing db back to ${RCLONE_REMOTE}"
 safe_push
+
+if [ "${MODE}" = "intraday-price" ]; then
+    snapshot_and_prune
+fi
 
 echo "[daily-update] cleaning up local scratch copy"
 rm -rf "${WORK_DIR}"
