@@ -33,8 +33,24 @@ day:
   tips-only       parse new tip emails only, no price fetch (weekdays)
   daily-price     also fetch daily OHLCV into PRICE_TABLENAME (Saturdays)
   intraday-price  also fetch 5m intraday OHLCV into INTRADAY_TABLENAME (Sundays)
+  backfill        one-time historical catch-up for a date range the normal
+                   runs never covered -- see below and
+                   doc/DESIGN_DECISIONS.md ("historical tip backfill")
 Which mode runs which day is entirely a scheduling decision, made in ops/
 (three separate systemd timers), not in this script.
+
+--mode backfill (with required --start-date/--end-date, inclusive): parses
+only the tip emails within that historical window (read-only IMAP search,
+mark_seen=False -- same reasoning as --all-emails below, this must never
+touch \\Seen on mail the normal weekday run already processed or still
+will), then fetches BOTH daily and 5m price windows and runs
+update_outcomes() for exactly the tips parsed -- unlike the other
+price-fetching modes, there's no _still_open_tips() cutoff union, since a
+tip from months ago is long past its backfill window being "still open".
+ops/run_daily_update.sh drives the actual date range from a small state
+file, advancing it one batch at a time across repeated runs -- see
+doc/DESIGN_DECISIONS.md ("historical tip backfill") for why the batching
+itself lives there and not here.
 
 --all-emails: for a second, independent consumer of the same mailbox (e.g. a
 Mac running this manually alongside mars's scheduled runs, for an
@@ -154,9 +170,10 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["tips-only", "daily-price", "intraday-price"],
+        choices=["tips-only", "daily-price", "intraday-price", "backfill"],
         help="tips-only: parse emails, no price fetch. daily-price: also "
-             "fetch daily OHLCV. intraday-price: also fetch 5m OHLCV.",
+             "fetch daily OHLCV. intraday-price: also fetch 5m OHLCV. "
+             "backfill: historical catch-up for --start-date..--end-date.",
     )
     parser.add_argument(
         "--all-emails",
@@ -167,20 +184,52 @@ def main() -> None:
              "the other consumer's unseen-mail detection either. Leave "
              "unset for the normal unseen_only, mark-as-read run.",
     )
+    parser.add_argument(
+        "--start-date", type=date.fromisoformat,
+        help="--mode backfill only: inclusive start of the historical "
+             "tip-email window to parse and fetch.",
+    )
+    parser.add_argument(
+        "--end-date", type=date.fromisoformat,
+        help="--mode backfill only: inclusive end of the historical "
+             "tip-email window to parse and fetch.",
+    )
     args = parser.parse_args()
+
+    if args.mode == "backfill":
+        if args.start_date is None or args.end_date is None:
+            parser.error("--mode backfill requires both --start-date and --end-date")
+        if args.all_emails:
+            parser.error("--all-emails is not meaningful with --mode backfill "
+                         "(which already uses its own date-ranged, mark_seen=False search)")
+    elif args.start_date is not None or args.end_date is not None:
+        parser.error("--start-date/--end-date are only valid with --mode backfill")
 
     load_dotenv()
     args.eml_dir.mkdir(parents=True, exist_ok=True)
 
-    download_emails(
-        imap_server=os.environ["imap_server"],
-        username=os.environ["imap_username"],
-        password=os.environ["imap_password"],
-        target_folder=args.eml_dir,
-        sender_email=SENDER_EMAIL,
-        unseen_only=not args.all_emails,
-        mark_seen=not args.all_emails,
-    )
+    if args.mode == "backfill":
+        download_emails(
+            imap_server=os.environ["imap_server"],
+            username=os.environ["imap_username"],
+            password=os.environ["imap_password"],
+            target_folder=args.eml_dir,
+            sender_email=SENDER_EMAIL,
+            unseen_only=False,
+            mark_seen=False,
+            since_date=args.start_date,
+            before_date=args.end_date + timedelta(days=1),
+        )
+    else:
+        download_emails(
+            imap_server=os.environ["imap_server"],
+            username=os.environ["imap_username"],
+            password=os.environ["imap_password"],
+            target_folder=args.eml_dir,
+            sender_email=SENDER_EMAIL,
+            unseen_only=not args.all_emails,
+            mark_seen=not args.all_emails,
+        )
 
     eml_files = sorted(args.eml_dir.glob("*.eml"))
 
@@ -196,6 +245,26 @@ def main() -> None:
 
         if args.mode == "tips-only":
             log.info("tips-only mode: skipping price fetch")
+        elif args.mode == "backfill":
+            # No _still_open_tips() cutoff union here -- every tip in this
+            # window is months past its backfill window being "still open".
+            # Fetch exactly what was just parsed, for both price tables,
+            # then run outcomes -- a one-time catch-up, not the regular
+            # weekly cadence, so it does both instead of picking one table
+            # per mode like the other branches.
+            tip_list = sorted(set(new_tips), key=lambda t: (t[1], t[0]))
+            if tip_list:
+                tips(db, tip_list, PRICE_TABLENAME, PRICE_INTERVAL)
+                log.info("fetched %s price windows for %d backfilled tip(s)",
+                          PRICE_INTERVAL, len(tip_list))
+                tips(db, tip_list, INTRADAY_TABLENAME, INTRADAY_INTERVAL)
+                log.info("fetched %s price windows for %d backfilled tip(s)",
+                          INTRADAY_INTERVAL, len(tip_list))
+                update_outcomes(db)
+                log.info("updated outcomes")
+            else:
+                log.info("no tips parsed in %s..%s -- nothing to fetch",
+                          args.start_date, args.end_date)
         else:
             # Matches the calendar-day buffer tips() itself uses internally
             # (n2 * 2 + 5) so this cutoff is exactly as generous as the window

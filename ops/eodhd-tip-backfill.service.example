@@ -1,0 +1,21 @@
+# Copy to ops/eodhd-tip-backfill.service (drop the .example), edit the
+# User=/WorkingDirectory=/ExecStart= paths for this machine, then symlink
+# or copy into /etc/systemd/system/ and `systemctl enable --now
+# eodhd-tip-backfill.timer`. Gitignored because of those host-specific
+# absolute paths -- see doc/DESIGN_DECISIONS.md ("historical tip backfill").
+#
+# This is a ONE-TIME job: once ops/backfill_state advances past the gap
+# end date, each run becomes a no-op. Disable/remove this unit pair once
+# you're satisfied from the logs that the backfill is done.
+
+[Unit]
+Description=One-time historical tip backfill batch (see doc/DESIGN_DECISIONS.md, "historical tip backfill")
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Change this to the account that owns the repo checkout and rclone config.
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/repos/eodhd2
+ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/run_daily_update.sh backfill
