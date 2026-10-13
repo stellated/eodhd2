@@ -762,6 +762,103 @@ data pipeline:
   are gitignored (`User=`, absolute paths) with `.example` templates
   tracked instead.
 
+### Historical tip backfill (2026-10-12)
+**Problem:** production's automation only started reliably on
+2026-08-05 -- every tip email from 2026-04-08 (the earliest in the
+mailbox) through 2026-08-04 was never parsed into `tip_details`, and so
+never got a price-window fetch or an `outcomes` row either. Separately,
+reviewing a batch of recent tips surfaced three more tickers
+(NISN.US/XWIN.US/SATS.US) whose EODHD fetch failed with
+`_TransientEodhdResponse` -- researched the same way as the original five
+`ticker_aliases` entries (see "ticker_aliases" above) and confirmed as
+pure ticker-only renames (NISN->AIOS 2026-02-12, XWIN->XMAX 2026-05-18,
+SATS->ECHO 2026-06-24, all `ratio=1.0`), then added.
+
+**Decision on automating that research step:** no. Detection is already
+automatic (`_TransientEodhdResponse` logging, `unresolved_tips()`/
+`_log_unresolved_tips()`'s warnings) -- that's as far as this gets
+automated. Classifying *what kind* of corporate action occurred (pure
+rename vs. split vs. merger vs. cash-out vs. a genuine, no-successor
+loss) needs judgment against an external source and a price-continuity
+sanity check, the same way every existing alias was verified before being
+trusted. A wrong automatic classification doesn't fail loudly -- it
+silently splices wrong price data into the backtest db, exactly the
+failure mode `unresolved_tips()` and this whole table exist to avoid.
+Kept as a manual (LLM-assisted-on-request) step, same as the original
+five.
+
+**Decision on the backfill itself:** a new `--mode backfill` on
+`daily_update.py`, driven by a new batching layer in
+`run_daily_update.sh`, run on its own temporary systemd timer
+(`eodhd-tip-backfill.timer`) rather than as a single giant one-off run or
+a hand-run script:
+- **Why batched at all, not one run:** ~3,300-3,400 (code, tip_date)
+  tips across the gap (85 weekdays x the ~39.6 tips/day production's own
+  history shows), needing one EODHD call each for *both* daily and 5m
+  intraday price (Ian wants `outcomes` backfilled too, not just raw
+  price) -- roughly 6,600-6,800 calls total against a 1,200/day EODHD
+  cap. Comfortably spreadable, since weekdays currently run `tips-only`
+  (zero EODHD calls of their own), leaving the full daily cap free.
+- **Why a temporary systemd timer, not a script Ian runs by hand each
+  day:** Ian's choice, so the fortnight-ish backfill advances on its own
+  without a manual step each weekday morning, while he reviews the
+  previous night's log (planned login window 6-8am Melbourne time) for
+  anything that needs research -- new `ticker_aliases` candidates, or
+  anything else `_log_unresolved_tips()`/a crash surfaces.
+- **Batch size is `BACKFILL_BATCH_DAYS` (default 14 calendar days)**, an
+  env var in `run_daily_update.sh` (overridable via `daily-update.env`,
+  same convention as `SNAPSHOT_RETENTION_DAYS`) rather than hardcoded --
+  Ian explicitly wanted to be able to widen/narrow it mid-backfill
+  without a code change. 14 calendar days reliably covers ~10 weekdays
+  (two full Mon-Fri weeks) per batch, matching Ian's own "10 days of tips
+  per weekday" plan -- chosen as a *calendar* window rather than
+  explicitly walking 10 weekday dates because the newsletter only sends
+  on weekdays anyway, so a weekend inside the window just finds nothing
+  to download; no separate weekday-skipping logic was needed.
+- **Progress tracking:** a small state file (`ops/backfill_state`,
+  gitignored -- host-specific progress, not meaningful to share/commit)
+  holds the next batch's start date, defaulting to the gap's start
+  (2026-04-08) when absent. `run_daily_update.sh` only advances it *after*
+  a successful push (`safe_push()`, same as every other mode) -- a crash
+  mid-batch just retries the identical window next run, same idempotent
+  spirit as the rest of this script. Once the state passes the gap's end
+  (2026-08-04), the script logs "backfill complete" and exits 0 without
+  touching the db at all -- a deliberate no-op rather than a
+  self-disabling timer: disabling the timer via `systemctl` from inside
+  an unattended script needs a privilege-escalation path (passwordless
+  sudo for that one command) that wasn't judged worth adding for a
+  one-time job. Ian disables/removes the unit pair by hand once satisfied
+  from the logs that it's done.
+- **No `_still_open_tips()` cutoff union** in backfill mode (unlike
+  `daily-price`/`intraday-price`) -- every backfilled tip is months past
+  its own window closing, so there's nothing "still open" to extend with;
+  `tip_list` is built from exactly what was parsed for that batch's date
+  range.
+- **Email download is read-only**: a new `since_date`/`before_date` pair
+  on `download_emails()` (IMAP `SINCE`/`BEFORE`, `SINCE` inclusive /
+  `BEFORE` exclusive -- so `end_date` is passed as `end_date + 1 day`)
+  narrows the search to exactly the batch's window, with
+  `unseen_only=False, mark_seen=False` -- same reasoning as `--all-emails`
+  for a second independent consumer (see above): this must never touch
+  `\Seen` on mail the normal weekday run has already processed or still
+  will. The search-criteria string assembly was pulled out into
+  `_build_search_criteria()` so it's unit-testable without mocking an
+  IMAP connection; the no-date-filter cases are verified byte-identical
+  to the pre-existing behavior.
+- **Verified** the batching/state-advance arithmetic against an isolated
+  harness (not the real script, to avoid any live IMAP/EODHD/rclone
+  calls during testing): the default 14-day batch size produces exactly
+  9 batches from 2026-04-08 through 2026-08-04 with the last one
+  correctly truncated to the gap end, a non-default batch size (10)
+  produces the expected different batch count, and a run after
+  completion is a harmless no-op. This caught a real bug before it ever
+  ran for real: the date-math `python -c "..."` calls were initially
+  indexed `sys.argv[0]`/`sys.argv[1]`/... (copying the pattern from
+  `remote_modtime()`'s *shell* code) instead of `sys.argv[1]`/
+  `sys.argv[2]`/... -- `python -c CODE arg1 arg2` puts `'-c'` itself at
+  `sys.argv[0]`, same off-by-one `snapshot_and_prune()`'s existing
+  Python calls already got right.
+
 ---
 
 ## outcomes design (2026-10-07)

@@ -1,6 +1,9 @@
+import sys
 from datetime import date, timedelta
 
-from scripts.daily_update import _all_tips, _log_unresolved_tips, _still_open_tips
+import pytest
+
+from scripts.daily_update import _all_tips, _log_unresolved_tips, _still_open_tips, main
 from src.eodhd_io import Database
 
 
@@ -107,3 +110,50 @@ def test_log_unresolved_tips_logs_info_when_nothing_to_report(tmp_path, caplog):
             _log_unresolved_tips(db)
 
     assert any("no unresolved tips" in rec.message for rec in caplog.records)
+
+
+def _run_main_with_argv(monkeypatch, argv):
+    monkeypatch.setattr(sys, "argv", ["daily_update.py", *argv])
+    with pytest.raises(SystemExit):
+        main()
+
+
+def test_main_backfill_requires_start_and_end_date(monkeypatch, tmp_path):
+    _run_main_with_argv(
+        monkeypatch,
+        [
+            "--db-path", str(tmp_path / "x.db"), "--eml-dir", str(tmp_path / "eml"),
+            "--mode", "backfill",
+        ],
+    )
+
+
+def test_main_backfill_requires_end_date_too(monkeypatch, tmp_path):
+    _run_main_with_argv(
+        monkeypatch,
+        [
+            "--db-path", str(tmp_path / "x.db"), "--eml-dir", str(tmp_path / "eml"),
+            "--mode", "backfill", "--start-date", "2026-04-08",
+        ],
+    )
+
+
+def test_main_backfill_rejects_all_emails(monkeypatch, tmp_path):
+    _run_main_with_argv(
+        monkeypatch,
+        [
+            "--db-path", str(tmp_path / "x.db"), "--eml-dir", str(tmp_path / "eml"),
+            "--mode", "backfill", "--start-date", "2026-04-08", "--end-date", "2026-04-21",
+            "--all-emails",
+        ],
+    )
+
+
+def test_main_non_backfill_rejects_start_date(monkeypatch, tmp_path):
+    _run_main_with_argv(
+        monkeypatch,
+        [
+            "--db-path", str(tmp_path / "x.db"), "--eml-dir", str(tmp_path / "eml"),
+            "--mode", "tips-only", "--start-date", "2026-04-08",
+        ],
+    )

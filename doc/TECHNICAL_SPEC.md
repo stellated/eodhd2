@@ -572,6 +572,26 @@ this script's schedule — see `doc/DESIGN_DECISIONS.md` ("disk-space alert").
 It alerts via `~/repos/alerts`' existing email/SMS notifier when free space
 on `/` drops below 1 GiB.
 
+### Historical tip backfill (added 2026-10-12)
+`--mode backfill` (with required `--start-date`/`--end-date`, inclusive)
+parses and fetches tips for a historical date range the normal runs never
+covered — production's automation only ran reliably from 2026-08-05
+onward. It downloads only the emails in that window (`download_emails()`'s
+new `since_date`/`before_date` IMAP filter, built by
+`_build_search_criteria()`), with `mark_seen=False` so it never disturbs
+the normal weekday run's unseen-mail state, then fetches **both**
+`daily`/`1d` and `intraday_5m`/`5m` price windows for exactly the tips
+parsed and calls `update_outcomes()` — unlike the other price-fetching
+modes there's no `_still_open_tips()` cutoff union, since a tip from
+months ago is long past its window being "still open".
+
+`ops/run_daily_update.sh` drives the actual date range, batching it via
+`BACKFILL_BATCH_DAYS` (default 14 calendar days) and tracking progress in
+`ops/backfill_state`, on its own temporary `eodhd-tip-backfill.timer`
+(weekdays only). See `doc/DESIGN_DECISIONS.md` ("Historical tip backfill")
+for the full batching/state-advance design and why the ticker-alias
+research this surfaces stays a manual step.
+
 ## Dependencies
 
 ```

@@ -28,6 +28,25 @@ def decode_subject(subject):
             decoded_subject.append(part)
     return "".join(decoded_subject)
 
+def _build_search_criteria(sender_email, unseen_only=False, since_date=None, before_date=None):
+    """Build the IMAP SEARCH criteria string. Split out from download_emails()
+    so it's unit-testable without mocking an IMAP connection.
+
+    since_date/before_date are for a historical backfill (see
+    doc/DESIGN_DECISIONS.md, "historical tip backfill"): IMAP SINCE is
+    inclusive (on or after), BEFORE is exclusive (strictly before) -- for an
+    inclusive end date, pass before_date = end_date + 1 day.
+    """
+    terms = [f'FROM "{sender_email}"']
+    if unseen_only:
+        terms.append("UNSEEN")
+    if since_date is not None:
+        terms.append(f'SINCE "{since_date.strftime("%d-%b-%Y")}"')
+    if before_date is not None:
+        terms.append(f'BEFORE "{before_date.strftime("%d-%b-%Y")}"')
+    return "(" + " ".join(terms) + ")"
+
+
 def download_emails(imap_server,
                     username,
                     password,
@@ -37,7 +56,9 @@ def download_emails(imap_server,
                     n=None,
                     next_n=None,
                     unseen_only=False,
-                    mark_seen=True):
+                    mark_seen=True,
+                    since_date=None,
+                    before_date=None):
     # Connect to the IMAP server
     mail = imaplib.IMAP4_SSL(imap_server)
     mail.login(username, password)
@@ -61,9 +82,13 @@ def download_emails(imap_server,
     # consumer still needs to see as unread) -- setting only the former
     # still lets it silently steal new mail out from under the other
     # consumer by marking it Seen.
-    search_criteria = f'(FROM "{sender_email}")'
-    if unseen_only:
-        search_criteria = f'(FROM "{sender_email}" UNSEEN)'
+    #
+    # since_date/before_date narrow the search to a specific historical
+    # window -- used by the one-time tip backfill, which (like a second
+    # independent consumer) also always passes mark_seen=False, since it has
+    # no business touching \\Seen on mail the normal weekday run already
+    # processed or will process.
+    search_criteria = _build_search_criteria(sender_email, unseen_only, since_date, before_date)
     status, messages = mail.search(None, search_criteria)
     if status != "OK":
         print("No messages found!")

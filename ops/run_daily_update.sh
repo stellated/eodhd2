@@ -3,12 +3,12 @@
 # the database. Pulls the canonical db down from remote storage (rclone),
 # runs the update, pushes it back, then deletes the local scratch copy.
 #
-# Usage: run_daily_update.sh <tips-only|daily-price|intraday-price> [extra daily_update.py args, e.g. --all-emails]
-# The mode is baked into each of the three .service units' ExecStart= --
-# see doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split"). Any
-# additional args (e.g. --all-emails, for a second independent consumer of
-# the same mailbox -- see scripts/daily_update.py's docstring) are passed
-# straight through to daily_update.py.
+# Usage: run_daily_update.sh <tips-only|daily-price|intraday-price|backfill> [extra daily_update.py args, e.g. --all-emails]
+# The mode is baked into each .service unit's ExecStart= -- see
+# doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split"). Any additional
+# args (e.g. --all-emails, for a second independent consumer of the same
+# mailbox -- see scripts/daily_update.py's docstring) are passed straight
+# through to daily_update.py.
 #
 # Config comes from ops/daily-update.env (copy daily-update.env.example and
 # edit it for this machine) or environment overrides.
@@ -18,11 +18,16 @@
 # SNAPSHOT_RETENTION_DAYS -- see snapshot_and_prune() below and
 # doc/DESIGN_DECISIONS.md ("weekly db snapshots + retention").
 #
+# backfill mode gets its --start-date/--end-date computed here, not baked
+# into the .service unit, since the date range advances every run -- see
+# the backfill block below and doc/DESIGN_DECISIONS.md ("historical tip
+# backfill").
+#
 # Requires jq (in addition to rclone) -- used by safe_push()'s remote
 # staleness check and snapshot_and_prune()'s pruning logic below.
 set -euo pipefail
 
-MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price> [extra args]}"
+MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price|backfill> [extra args]}"
 shift
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -50,6 +55,49 @@ EML_DIR="${WORK_DIR}/eml"
 PULLED_MODTIME_FILE="${DB_PATH}.pulled_modtime"
 
 mkdir -p "${WORK_DIR}" "${EML_DIR}"
+
+# backfill-only config: how many calendar days each batch covers (14 ->
+# ~10 weekdays, since the newsletter only sends on weekdays and a calendar
+# window just has nothing to find on a weekend -- no separate
+# weekday-skipping logic needed), the historical gap being closed, and
+# where progress across repeated runs is tracked. All overridable via
+# ops/daily-update.env so the batch size can be widened/narrowed mid-run
+# without a code change. See doc/DESIGN_DECISIONS.md ("historical tip
+# backfill").
+BACKFILL_BATCH_DAYS="${BACKFILL_BATCH_DAYS:-14}"
+BACKFILL_GAP_START="${BACKFILL_GAP_START:-2026-04-08}"
+BACKFILL_GAP_END="${BACKFILL_GAP_END:-2026-08-04}"
+BACKFILL_STATE_FILE="${BACKFILL_STATE_FILE:-${REPO_DIR}/ops/backfill_state}"
+
+if [ "${MODE}" = "backfill" ]; then
+    if [ -f "${BACKFILL_STATE_FILE}" ]; then
+        BACKFILL_NEXT_START="$(cat "${BACKFILL_STATE_FILE}")"
+    else
+        BACKFILL_NEXT_START="${BACKFILL_GAP_START}"
+    fi
+
+    # Plain lexicographic string comparison, not date arithmetic -- safe
+    # for fixed-width ISO "YYYY-MM-DD" strings on both bash 3.2 (macOS) and
+    # bash 4+ (Linux), so no portability concern here unlike the date *math*
+    # below (which does go through Python, same reasoning as
+    # snapshot_and_prune()'s date handling).
+    if [[ "${BACKFILL_NEXT_START}" > "${BACKFILL_GAP_END}" ]]; then
+        echo "[daily-update] backfill complete (${BACKFILL_GAP_START}..${BACKFILL_GAP_END} already covered) -- nothing to do. Disable eodhd-tip-backfill.timer once you're satisfied from the logs."
+        exit 0
+    fi
+
+    BACKFILL_END="$("${REPO_DIR}/.venv/bin/python" -c "
+import datetime, sys
+start = datetime.date.fromisoformat(sys.argv[1])
+batch_days = int(sys.argv[2])
+gap_end = datetime.date.fromisoformat(sys.argv[3])
+end = min(start + datetime.timedelta(days=batch_days - 1), gap_end)
+print(end.isoformat())
+" "${BACKFILL_NEXT_START}" "${BACKFILL_BATCH_DAYS}" "${BACKFILL_GAP_END}")"
+
+    echo "[daily-update] backfill batch: ${BACKFILL_NEXT_START}..${BACKFILL_END}"
+    set -- --start-date "${BACKFILL_NEXT_START}" --end-date "${BACKFILL_END}" "$@"
+fi
 
 # ${RCLONE_REMOTE}'s rclone ModTime right now, "NONE" if it doesn't exist
 # yet (a legitimate state -- the very first run, before any db has ever
@@ -208,6 +256,20 @@ fi
 
 echo "[daily-update] pushing db back to ${RCLONE_REMOTE}"
 safe_push
+
+if [ "${MODE}" = "backfill" ]; then
+    # Only advance progress once the push above actually succeeded (set -e
+    # would have aborted the script before this line otherwise) -- a crash
+    # mid-batch just retries the same window next run, same idempotent
+    # spirit as the rest of this script.
+    BACKFILL_NEXT_START="$("${REPO_DIR}/.venv/bin/python" -c "
+import datetime, sys
+end = datetime.date.fromisoformat(sys.argv[1])
+print((end + datetime.timedelta(days=1)).isoformat())
+" "${BACKFILL_END}")"
+    echo "${BACKFILL_NEXT_START}" > "${BACKFILL_STATE_FILE}"
+    echo "[daily-update] backfill progress advanced to ${BACKFILL_NEXT_START}"
+fi
 
 if [ "${MODE}" = "intraday-price" ]; then
     snapshot_and_prune
