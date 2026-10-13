@@ -216,8 +216,9 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 constrained: `pending`, `aborted`, `expired_unfilled`, `open`,
 `closed_target`, `closed_stop`, `closed_time`), `buy_date`,
 `buy_timestamp`, `buy_local_time`, `buy_trigger_price`, `buy_price`,
-`buy_bar_volume`, `risk_per_share`, and the `sell_*`/`profit_per_share`/
-`r_multiple` equivalents. See `doc/DESIGN_DECISIONS.md` ("outcomes
+`buy_bar_volume`, `risk_per_share`, the `sell_*`/`profit_per_share`/
+`r_multiple` equivalents, and `fill_granularity` (`'5m'` or `'1d'`, no
+DB-level CHECK -- see below). See `doc/DESIGN_DECISIONS.md` ("outcomes
 design") for the full rationale behind every column and the status enum.
 
 **update_outcomes(db, tablename="outcomes") -> None**
@@ -226,6 +227,14 @@ design") for the full rationale behind every column and the status enum.
   (logged).
 - Recomputes every `pending`/`open` row against currently-available
   `intraday_5m` data, from scratch each call (not incremental).
+- Falls back to `daily` bars (`_load_bars_with_fallback()`) when a ticker
+  has zero `intraday_5m` rows at all and its window has permanently
+  closed -- e.g. thinly-traded closed-end funds EODHD never ticks
+  intraday for at any granularity. The resolved row is tagged
+  `fill_granularity='1d'` (vs `'5m'` for the normal path) since daily
+  bars are lower-fidelity (same-bar target/stop collisions are far more
+  common with no intrabar ordering) -- see `doc/DESIGN_DECISIONS.md`,
+  "Daily-bar outcomes fallback".
 - `pending` -> `aborted` (stop breached before ever entering) /
   `open` (entry zone touched) / `expired_unfilled` (window closed,
   neither happened) / stays `pending` (window still open).

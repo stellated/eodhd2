@@ -2,7 +2,7 @@
 per-status checkers, chaining, seeding/dedup, and a couple of
 end-to-end update_outcomes() runs against a real (temp) Database.
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import polars as pl
@@ -16,6 +16,7 @@ from src.eodhd_io import (
     _check_pending,
     _entry_window_closed,
     _level_crossed,
+    _load_bars_with_fallback,
     _load_tip,
     _seed_new_outcomes,
     _sell_fields,
@@ -577,3 +578,150 @@ def test_update_outcomes_skips_bad_tip_and_continues(tmp_path, caplog):
         ).fetchall())
     assert rows == {"BAD.US": "pending", "GOOD.US": "closed_target"}
     assert any("BAD.US" in rec.message for rec in caplog.records)
+
+
+# --- daily-bar outcomes fallback (tickers EODHD never has intraday for) ---
+
+def _seed_daily_bars(db: Database, code: str, rows: list[dict]) -> None:
+    pdf = pd.DataFrame([{
+        "code": code,
+        "timestamp": r["timestamp"],
+        "datetime": pd.Timestamp(r["date"]),
+        "date": r["date"],
+        "op": r["op"], "hi": r["hi"], "lo": r["lo"], "cl": r["cl"],
+        "ac": r["cl"], "vo": r["vo"],
+    } for r in rows])
+    pandas2sqlite(pdf, db.conn, "daily")
+
+# A tip old enough that its window (n2*2+5 = 45 calendar days after
+# tip_date, default n2=20) has definitely closed, regardless of when the
+# test suite actually runs.
+_OLD_TIP_DATE = date.today() - timedelta(days=200)
+_RECENT_TIP_DATE = date.today() - timedelta(days=5)
+
+def test_load_bars_with_fallback_uses_daily_when_no_intraday_ever_and_window_closed(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "CEF.US", [
+            {"timestamp": 1, "date": _OLD_TIP_DATE,
+             "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
+            {"timestamp": 2, "date": _OLD_TIP_DATE + timedelta(days=1),
+             "op": 10.1, "hi": 10.3, "lo": 10.0, "cl": 10.2, "vo": 1100},
+        ])
+        bars, granularity = _load_bars_with_fallback(
+            db, "CEF.US", from_date=_OLD_TIP_DATE, tip_date=_OLD_TIP_DATE
+        )
+    assert granularity == "1d"
+    assert len(bars) == 2
+    assert "local_date" in bars.columns
+    assert "local_time" in bars.columns
+    assert bars["local_time"].to_list() == [None, None]
+
+def test_load_bars_with_fallback_prefers_intraday_when_available(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "BOTH.US", [
+            {"timestamp": 1, "date": _OLD_TIP_DATE,
+             "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
+        ])
+        _seed_intraday_bars(db, "BOTH.US", [
+            {"timestamp": 1, "local_date": _OLD_TIP_DATE, "local_time": "09:30:00",
+             "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
+        ])
+        bars, granularity = _load_bars_with_fallback(
+            db, "BOTH.US", from_date=_OLD_TIP_DATE, tip_date=_OLD_TIP_DATE
+        )
+    assert granularity == "5m"
+    assert len(bars) == 1
+
+def test_load_bars_with_fallback_waits_when_window_still_open(tmp_path):
+    """A brand-new tip with no intraday bars yet shouldn't fall back to
+    daily prematurely -- intraday might still arrive via the normal weekly
+    fetch, and guessing early would permanently mislabel it '1d'."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "NEW.US", [
+            {"timestamp": 1, "date": _RECENT_TIP_DATE,
+             "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
+        ])
+        bars, granularity = _load_bars_with_fallback(
+            db, "NEW.US", from_date=_RECENT_TIP_DATE, tip_date=_RECENT_TIP_DATE
+        )
+    assert granularity is None
+    assert bars.is_empty()
+
+def test_load_bars_with_fallback_does_not_substitute_daily_for_a_real_gap(tmp_path):
+    """If intraday_5m has rows for this code somewhere (just not from
+    from_date onward), that's a genuine coverage gap, not "never had
+    intraday" -- must not be papered over with daily data."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "GAP.US", [
+            {"timestamp": 1, "date": _OLD_TIP_DATE,
+             "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
+        ])
+        _seed_intraday_bars(db, "GAP.US", [
+            {"timestamp": 1, "local_date": _OLD_TIP_DATE - timedelta(days=30),
+             "local_time": "09:30:00",
+             "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
+        ])
+        bars, granularity = _load_bars_with_fallback(
+            db, "GAP.US", from_date=_OLD_TIP_DATE, tip_date=_OLD_TIP_DATE
+        )
+    assert granularity is None
+    assert bars.is_empty()
+
+def test_update_outcomes_end_to_end_resolves_via_daily_fallback(tmp_path):
+    """A CEF-like ticker: full daily coverage, zero intraday ever, window
+    long closed -- must resolve (not stay pending forever) and be tagged
+    '1d' so a later stats pass can tell it apart from a 5m-resolved row."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_full_tip(db, code="CEF.US", tip_date=_OLD_TIP_DATE.isoformat())
+        _seed_daily_bars(db, "CEF.US", [
+            {"timestamp": 1, "date": _OLD_TIP_DATE,
+             "op": 11.0, "hi": 11.1, "lo": 10.9, "cl": 11.0, "vo": 1000},
+            {"timestamp": 2, "date": _OLD_TIP_DATE + timedelta(days=1),
+             "op": 10.8, "hi": 10.9, "lo": 10.2, "cl": 10.3, "vo": 2000},
+            {"timestamp": 3, "date": _OLD_TIP_DATE + timedelta(days=2),
+             "op": 11.0, "hi": 12.1, "lo": 10.9, "cl": 12.0, "vo": 3000},
+        ])
+        update_outcomes(db)
+        row = db.conn.execute(
+            "SELECT status, buy_trigger_price, sell_trigger_price, fill_granularity "
+            "FROM outcomes WHERE code = 'CEF.US'"
+        ).fetchone()
+    assert row == ("closed_target", 10.5, 12.0, "1d")
+
+def test_update_outcomes_migration_tags_preexisting_resolved_rows_as_5m(tmp_path):
+    """A row resolved before fill_granularity existed was necessarily
+    resolved against intraday_5m (the daily fallback didn't exist yet) --
+    the migration must retroactively tag it, so a query that filters on
+    fill_granularity doesn't silently lose all pre-existing history."""
+    with Database(tmp_path / "test.db") as db:
+        db.conn.execute("""
+            CREATE TABLE tip_details (
+                exchange TEXT, tip_date TEXT, tip_n INTEGER, code TEXT,
+                entry_zone_low REAL, entry_zone_high REAL, target REAL, stop REAL,
+                holding_period_low INTEGER, holding_period_high INTEGER
+            )
+        """)
+        db.conn.execute("""
+            CREATE TABLE outcomes (
+                code TEXT NOT NULL, tip_date TEXT NOT NULL, exchange TEXT NOT NULL,
+                tip_n INTEGER NOT NULL, status TEXT NOT NULL,
+                buy_date TEXT, buy_timestamp INTEGER, buy_local_time TEXT,
+                buy_trigger_price REAL, buy_price REAL, buy_bar_volume INTEGER,
+                risk_per_share REAL, sell_date TEXT, sell_timestamp INTEGER,
+                sell_local_time TEXT, sell_trigger_price REAL, sell_price REAL,
+                sell_bar_volume INTEGER, profit_per_share REAL, r_multiple REAL,
+                PRIMARY KEY (code, tip_date)
+            )
+        """)
+        db.conn.execute(
+            "INSERT INTO outcomes (code, tip_date, exchange, tip_n, status) "
+            "VALUES ('OLD.US', '2026-01-01', 'NYSE', 1, 'closed_target')"
+        )
+        db.conn.commit()
+        update_outcomes(db)
+        cols = {row[1] for row in db.conn.execute("PRAGMA table_info(outcomes)")}
+        granularity = db.conn.execute(
+            "SELECT fill_granularity FROM outcomes WHERE code = 'OLD.US'"
+        ).fetchone()[0]
+    assert "fill_granularity" in cols
+    assert granularity == "5m"

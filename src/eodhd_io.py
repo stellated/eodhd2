@@ -1249,6 +1249,16 @@ CREATE TABLE IF NOT EXISTS {tablename} (
     profit_per_share REAL,
     r_multiple REAL,
 
+    -- '5m' (resolved against intraday_5m, the normal/precise path) or '1d'
+    -- (resolved against daily -- a fallback for tickers EODHD has never
+    -- supplied any intraday history for at all, e.g. thinly-traded closed-
+    -- end funds; see doc/DESIGN_DECISIONS.md, "daily-bar outcomes
+    -- fallback"). NULL until a position has actually been checked against
+    -- some bar source. No CHECK constraint -- this column is added via
+    -- ALTER TABLE to existing tables, which SQLite can't retroactively
+    -- constrain; the two values above are the only ones ever written.
+    fill_granularity TEXT,
+
     PRIMARY KEY (code, tip_date)
 );
 """
@@ -1503,6 +1513,67 @@ def _load_bars(
     return pandas2polars(pdf).sort("timestamp")
 
 
+def _load_bars_with_fallback(
+    db: "Database", code: str, from_date: date, tip_date: date, n2: Optional[int] = None
+) -> tuple[pl.DataFrame, Optional[str]]:
+    """_load_bars() against intraday_5m, as update_outcomes() always used
+    to. If that's empty, falls back to daily bars -- but only once we can
+    be confident this ticker will never get intraday data, not just that
+    it hasn't arrived yet:
+    - the tip's window has permanently closed (tip_date + n2*2+5 calendar
+      days in the past -- the same buffer unresolved_tips() uses to call a
+      coverage gap "permanent" rather than "still filling in"), and
+    - intraday_5m has zero rows for this code at all (not just from
+      from_date onward) -- confirms EODHD has never had any intraday
+      history for this ticker, rather than this code's data just not
+      having been fetched yet this week.
+
+    Discovered via a real case: several thinly-traded closed-end funds
+    (EMF.US, AWP.US, CHY.US, JRS.US) have complete daily coverage but
+    EODHD returns zero rows for every intraday interval tried (5m, 1h) --
+    not a corporate-action gap (ticker_aliases' territory), just an
+    instrument EODHD never ticks intraday. Without this fallback those
+    tips' outcomes rows stay 'pending' forever, which silently drops them
+    from (or embuggers) any later statistical pass over the whole table.
+
+    The daily bars are normalized into the exact column shape intraday
+    bars already have (date -> local_date; a null local_time column
+    added) so _check_pending()/_check_open()/_sell_fields() etc. need no
+    changes at all to work against either source -- they just see `bars`.
+    vo > 0 filtering already in those functions carries over unchanged:
+    a zero-volume daily row is padding, same convention as intraday.
+
+    Returns (bars, granularity) where granularity is "5m", "1d", or None
+    (bars empty either way -- nothing to do this round, exactly the
+    behavior before this fallback existed).
+    """
+    bars = _load_bars(db, code, from_date)
+    if not bars.is_empty():
+        return bars, "5m"
+
+    n2 = n2 if n2 is not None else DEFAULT_N2
+    if tip_date + timedelta(days=n2 * 2 + 5) >= date.today():
+        return bars, None  # window still open -- real intraday might still arrive
+
+    if db._table_exists("intraday_5m"):
+        ever_count = db.conn.execute(
+            "SELECT COUNT(*) FROM intraday_5m WHERE code = ?", (code,)
+        ).fetchone()[0]
+        if ever_count > 0:
+            # Has intraday somewhere in time, just not from_date onward --
+            # a real coverage gap, not "never had any". Don't paper over
+            # that with daily data; let it keep surfacing as-is.
+            return bars, None
+
+    daily_bars = _load_bars(db, code, from_date, tablename="daily")
+    if daily_bars.is_empty():
+        return daily_bars, None
+    daily_bars = daily_bars.rename({"date": "local_date"}).with_columns(
+        pl.lit(None, dtype=pl.Time).alias("local_time")
+    )
+    return daily_bars, "1d"
+
+
 def _load_tip(db: "Database", exchange: str, tip_date: str, tip_n: int) -> dict:
     """Raises ValueError with the exact missing field(s) named if any
     required tip_details column is NULL -- e.g. a tips_io.py parsing gap
@@ -1578,6 +1649,23 @@ def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
     incremental-state approach.
     """
     db.conn.execute(_DDL_OUTCOMES.format(tablename=tablename))
+    existing_cols = {row[1] for row in db.conn.execute(f"PRAGMA table_info({tablename})")}
+    if "fill_granularity" not in existing_cols:
+        # Migration for a table created before this column existed --
+        # harmless/skipped for one created fresh with the current DDL.
+        db.conn.execute(f"ALTER TABLE {tablename} ADD COLUMN fill_granularity TEXT")
+        # Every row resolved before this column existed was necessarily
+        # resolved against intraday_5m -- the daily fallback below is the
+        # only other path, and it didn't exist yet. Tag them retroactively
+        # so a query filtering on fill_granularity doesn't silently lose
+        # this table's entire pre-existing history. Still-open positions
+        # need no backfill here -- they get tagged the next time they're
+        # actually (re)checked, below.
+        db.conn.execute(
+            f"UPDATE {tablename} SET fill_granularity = '5m' "  # noqa: S608
+            f"WHERE fill_granularity IS NULL AND status NOT IN ('pending', 'open')"
+        )
+        db.conn.commit()
     _seed_new_outcomes(db, tablename)
 
     for pos in _load_positions(db, tablename, statuses=["pending", "open"]):
@@ -1588,10 +1676,12 @@ def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
         try:
             tip = _load_tip(db, pos["exchange"], pos["tip_date"].isoformat(), pos["tip_n"])
             anchor = tip["tip_date"] if pos["status"] == "pending" else pos["buy_date"]
-            bars = _load_bars(db, pos["code"], from_date=anchor)
+            bars, granularity = _load_bars_with_fallback(
+                db, pos["code"], from_date=anchor, tip_date=tip["tip_date"]
+            )
             if bars.is_empty():
                 continue
-            new_pos = _advance_position(pos, bars, tip)
+            new_pos = _advance_position({**pos, "fill_granularity": granularity}, bars, tip)
             if new_pos != pos:
                 _write_position(db, tablename, new_pos)
         except Exception as e:

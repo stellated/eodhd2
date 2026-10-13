@@ -1324,6 +1324,81 @@ production db before this fix stay `NULL` unless/until that date range is
 naturally re-fetched (e.g. via `_still_open_tips()`'s backfill window) --
 no retroactive backfill was run.
 
+### Daily-bar outcomes fallback (2026-10-13)
+**Problem:** Ian noticed `outcomes` would permanently drop four closed-end
+funds (EMF.US, AWP.US, CHY.US, JRS.US) surfaced by the tip backfill --
+each has complete `daily` coverage but EODHD returns zero rows for every
+intraday interval tried (5m, 1h), confirmed against a known-good ticker
+in the identical date window to rule out a fetch-mechanism bug. Since
+`_check_pending()`/`_check_open()` only ever scan `intraday_5m`, these
+four would stay `pending` forever -- and scoping the actual size of the
+problem (rather than guessing from 4 examples) found it's not an edge
+case: **69 tip-rows across 57 distinct tickers** currently have full
+daily coverage but zero intraday, stale-pending with no realistic path
+to ever resolving. Ian's concern was specifically about a planned future
+pass computing statistics over every `outcomes` row -- permanently-stuck
+`pending` rows are exactly the kind of silent gap that would quietly
+skew that analysis.
+
+**Decision:** `update_outcomes()` falls back to `daily` bars when
+`intraday_5m` has zero rows for a ticker, but only once two conditions
+both hold (`_load_bars_with_fallback()`):
+- the tip's window has permanently closed (`tip_date + n2*2+5` calendar
+  days in the past -- the same buffer `unresolved_tips()` already uses to
+  call a gap "permanent" rather than "still filling in"), and
+- `intraday_5m` has zero rows for this code **at all**, not just from the
+  current anchor date onward -- distinguishes "EODHD has never had any
+  intraday history for this ticker" from "hasn't been fetched yet this
+  week" (don't guess early) or "has intraday elsewhere in time, just not
+  from this anchor" (a genuine coverage gap -- don't paper over it with
+  daily data; let it keep surfacing as a real problem).
+
+The daily bars are normalized into the exact column shape intraday bars
+already have (`date` -> `local_date`; a null `local_time` column added)
+so `_check_pending()`/`_check_open()`/`_sell_fields()`/`_trading_days_seen()`
+etc. needed **zero changes** -- they just operate on whichever `bars`
+they're handed. The existing `vo > 0` filtering carries over unchanged
+(a zero-volume daily row is padding, same convention as intraday).
+
+**The precision tradeoff, and why it's tagged rather than silently
+blended:** a daily OHLC bar has no intrabar ordering -- a single day's
+range can span both target and stop far more often than a 5-minute bar
+does, so the existing "assume stop, log a warning" same-bar-collision
+rule (see "Same-bar collisions: assume the worst, always log" above)
+fires routinely for daily-resolved positions instead of rarely. That
+makes a daily-resolved outcome systematically lower-fidelity than a
+5-minute-resolved one, not a like-for-like substitute. Rather than
+either (a) blending them silently, contaminating the 5-minute population
+for Ian's planned stats pass, or (b) leaving them unresolved forever and
+permanently losing 57+ tickers' signal, a new nullable `fill_granularity`
+column (`'5m'` / `'1d'`, no DB-level CHECK constraint -- SQLite can't
+retroactively constrain a column added via `ALTER TABLE` to an existing
+table) records which bar source actually produced each position's
+current state, so a later statistical pass can include, exclude, or
+segment by it deliberately instead of either option happening by
+accident.
+
+**Migration for the existing production table:** every row resolved
+before this column existed was necessarily resolved against
+`intraday_5m` (the daily fallback didn't exist yet, so there was no other
+path) -- a one-time `ALTER TABLE` + `UPDATE ... SET fill_granularity =
+'5m' WHERE fill_granularity IS NULL AND status NOT IN ('pending', 'open')`
+retroactively tags all pre-existing terminal rows, gated on the column
+not already existing (same "only fires for a table created before X was
+part of the DDL" pattern as `local_time`'s migration in `pandas2sqlite()`)
+so it runs exactly once. Still-`pending`/`open` rows need no backfill --
+they get tagged naturally the next time they're actually (re)checked.
+
+**Verified** against a scratch copy of the production db: all four named
+CEFs resolved and tagged `'1d'`; 128 total rows resolved via the fallback
+across the wider 57-ticker backlog; the other 213 stale-`pending` rows
+(a separate, larger gap -- no price data of any kind, likely from the
+pre-backfill transition period -- not today's problem) correctly stayed
+untouched; 1,794 pre-existing resolved rows retroactively tagged `'5m'`
+by the migration; and the predicted increase in same-bar-collision
+warnings was observed (9 new warnings), confirming the precision tradeoff
+is real and now visible rather than silent.
+
 ---
 
 ## tips_io design
