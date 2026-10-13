@@ -22,6 +22,9 @@ ops/eodhd-tip-backfill.timer
 # Host-specific backfill progress (which batch comes next) -- not
 # meaningful to share/commit.
 ops/backfill_state
+# Same reasoning for the monthly IG tiered-margin unit pair.
+ops/eodhd-ig-margins.service
+ops/eodhd-ig-margins.timer
 
 # Personal data captured for local inspection, not project source.
 # One directory-level rule covers every current and future file in the

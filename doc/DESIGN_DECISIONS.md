@@ -859,6 +859,149 @@ a hand-run script:
   `sys.argv[0]`, same off-by-one `snapshot_and_prune()`'s existing
   Python calls already got right.
 
+### IG tiered margins (2026-10-12)
+**Problem:** Ian wanted IG's tiered-margin spreadsheet (which ticker can
+go short, at what borrow rate, and the position-size tiers before margin
+increases) loaded into the db, continuing a monthly archive its
+predecessor (`get_ig_margins.py`, copied over from an old, long-gone
+"nebula" machine) had been keeping by hand since 2025-02-01.
+
+**Investigation before any code:** downloaded and inspected the real
+spreadsheet rather than trusting the old script's assumptions blind.
+Found two real data-quality issues the old script didn't handle:
+- **Caret-suffixed Reuters codes** (e.g. `APT.AX^B22`) are not part of
+  the identifier -- confirmed against real corporate actions (Activision
+  Blizzard/Microsoft, Abcam/Danaher, Adamas Pharmaceuticals/Supernus, and
+  the Aceto/Achaogen/Adeptus Health bankruptcies all match their
+  suffix's encoded month/year almost exactly, using an `A`=Jan...`L`=Dec
+  letter scheme). When a ticker is reused after such an event, Reuters
+  keeps *both* the retired RIC and the new live one under the same root
+  code (e.g. `MTL.AX^C21` and `MTL.AX` both exist) -- exactly 3 real
+  `(code)` collisions in the current AU+US data. Dropping every
+  caret-suffixed row (not just stripping the suffix text) resolves all 3
+  with zero duplicates remaining.
+- **14 rows carry a corrupted `tier1_range`** (e.g. `0 - -571,901,888`).
+  Checked whether this was a simple sign error (Ian's hypothesis) before
+  "fixing" anything: 13 of the 14 share the *exact same* magnitude
+  despite being completely unrelated companies with wildly different
+  `borrow_rate`s (1.16% to 45.56%) -- inconsistent with a genuine
+  per-security overflow (which should vary with each security's price),
+  consistent instead with a fixed sentinel/error value IG's backend
+  emits when it can't compute a real boundary (every one of the 14 is a
+  bankrupt, delisted, or deeply distressed OTC name). `tier1_limit`/
+  `tier1_rate` are set to `NULL` for these rather than "corrected" by
+  flipping the sign, which would have manufactured a plausible-looking
+  but almost certainly fictitious number.
+
+**Decision on scope:** the *sqlite* table (`ig_margins`, in `sda.db`) is
+AU/US only, same as the old script -- this is the project's own trading
+universe. The *raw monthly spreadsheet* (all ~20 countries) is archived
+to OneDrive unfiltered, for continuity with nebula's history, independent
+of whatever the sqlite table's own scope ever becomes.
+
+**Decision on history:** `ig_margins` uses PK `(code, download_date)` and
+keeps every month's row (`INSERT OR REPLACE` is idempotent for a
+same-day retry, but append-only across distinct months) -- Ian's
+explicit choice over overwriting a single current snapshot, revisitable
+once there's enough history to know how much the data actually moves
+month to month. `country` is kept as a plain column despite being
+redundant with `code`'s suffix (Ian's own observation) since it costs
+nothing and matches the old script's column list.
+
+**Decision on `--mode` vs. a separate script:** `scripts/get_ig_margins.py`
+is its own file, not a new `--mode` on `daily_update.py` -- this is a
+different domain (broker margin metadata, not tip/price data), matching
+the existing `tips_io.py`/`eodhd_io.py` separation ("different concern,
+different dependencies, different data model"). It runs on its own
+monthly `eodhd-ig-margins.timer`, independent of the weekday/Saturday/
+Sunday schedule (Ian's correction after an initial "fold it into the
+Saturday run" framing -- the monthly cadence and the historical-
+continuity requirement don't fit a weekly job).
+
+**`ops/lib_rclone_sync.sh` (new):** `remote_modtime()`/`safe_push()` were
+pulled out of `run_daily_update.sh` into a shared file, sourced by both
+it and the new `run_ig_margins.sh` -- both wrappers can touch the same
+`sda.db` from independent schedules, so the same ModTime race protection
+(see "Manual recovery incident", 2026-10-08) applies to both rather than
+being duplicated (and risking the two copies drifting if one is ever
+fixed and the other isn't). `recover_leftover_if_any()`/`pull_db()` were
+added alongside the moved functions for the same reason -- both wrappers
+do the identical pull/leftover-recovery dance.
+
+**Archiving the raw spreadsheet is the wrapper's job, not the script's:**
+`scripts/get_ig_margins.py` only downloads locally and writes to
+whatever `--db-path` points at -- it never decides where anything lives
+remotely, matching `daily_update.py`'s own "never decides where the
+canonical database lives" convention. `run_ig_margins.sh` pushes the
+downloaded file to `IG_ARCHIVE_RCLONE_REMOTE` (a different remote path
+from the db, since it's a different kind of artifact -- an append-only
+archive, one new dated file a month, not a single mutable file like the
+db -- so it needs no staleness check at all, unlike `safe_push()`). A
+failure here is logged and swallowed, not fatal (the db push already
+succeeded, which is the important part) -- but unlike
+`snapshot_and_prune()`'s weekly snapshots, next month's run won't retry
+*this* month's file, so a failure here is a real, permanent gap in the
+archive unless someone notices the warning and re-uploads by hand before
+the local scratch copy is cleaned up.
+
+**`openpyxl` dependency:** considered removing it (Ian asked) in favour
+of a stdlib-only `zipfile`+`xml.etree` parser, since pandas has no
+bundled xlsx engine at all -- rejected as meaningfully more code and more
+fragile against the sheet's own quirks (merged header cells, shared-
+string table) for no functional gain over a small, standard, actively-
+maintained library. Kept.
+
+**Verified:** `parse_tiered_spreadsheet()`/`write_to_sqlite()` against
+both a crafted fixture spreadsheet (AU/US filtering, caret-dropping,
+sentinel-nulling, numeric parsing, history-keeping, same-day-retry
+idempotency) and the real downloaded file (8,884 of 9,427 AU+US rows
+survive the caret filter -- exactly 543 dropped; exactly 12 of the 14
+known sentinel rows remain after 2 were already caret-dropped; zero
+`(code)` collisions; BHP.AU's real values sanity-checked by hand).
+
+**Incident during testing (2026-10-12):** an end-to-end test of
+`run_ig_margins.sh` was intended to run against local fake rclone
+remotes via environment-variable overrides, but `RCLONE_REMOTE`/
+`WORK_DIR` were silently clobbered by the real `ops/daily-update.env`
+the script sources (a plain, unconditional assignment in that file beats
+an exported default) -- so the test's pull/push actually ran against the
+real production `sda.db`. No data was lost (every pre-existing table
+verified intact afterward) and the content written was correct (the real
+spreadsheet, the verified-correct parsing logic) -- Ian reviewed the
+outcome and chose to keep it rather than treat it as a rollback
+situation. Lesson applied going forward: isolate a test like this by
+moving the real env file aside (with a trap to guarantee restoration)
+rather than relying on environment overrides a sourced config file can
+silently beat.
+
+**Nebula's archive location, and a one-time historical load (2026-10-12):**
+Ian placed nebula's full historical archive (2023-08-22 through
+2026-10-01) at `onedrive:Data/StockDataAnalytics/mars/tiered` -- the
+`IG_ARCHIVE_RCLONE_REMOTE` default (both in `ops/run_ig_margins.sh` and
+`ops/daily-update.env.example`) was updated to match, and the real
+`ops/daily-update.env` on mars got the explicit var added, so the
+ongoing monthly job keeps writing to the same folder nebula always used.
+
+Separately, `ig_margins` was backfilled with every monthly snapshot from
+`2026-04-01` through `2026-10-01` (parsed with the exact same
+`parse_tiered_spreadsheet()`/`write_to_sqlite()` used by the live job --
+no new code needed), on top of the live job's own `2026-10-12` row.
+`2026-04-01` was included despite being 7 days before
+`BACKFILL_GAP_START` (2026-04-08, the earliest tip email the historical
+tip backfill covers) -- at monthly granularity, excluding it would have
+left an arbitrary one-month gap right at the start of the backfilled
+period for a 7-day technicality, which seemed like the wrong call
+relative to the evident intent (margin history aligned with the tip
+backfill's coverage). **`tiered.2026-05-01.xlsx` is a cached HTTP 500
+error page, not a real spreadsheet** -- confirmed by inspecting its
+content (an Akamai edge error page, 502 bytes) rather than attempting to
+parse it -- so May 2026 is a genuine, permanent gap in the archive, not
+something recoverable by reprocessing. All 6 real months parsed to the
+identical 8,884-row AU/US count, and `BHP.AU`'s `tier1_rate` held
+constant at 20% across the whole 7-month span -- an early, if small,
+data point toward the "how much does this move month to month" question
+behind the decision to keep history at all (see above).
+
 ---
 
 ## outcomes design (2026-10-07)

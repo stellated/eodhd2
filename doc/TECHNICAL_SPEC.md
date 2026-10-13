@@ -592,12 +592,39 @@ months ago is long past its window being "still open".
 for the full batching/state-advance design and why the ticker-alias
 research this surfaces stays a manual step.
 
+## scripts/get_ig_margins.py — monthly IG tiered-margin load (added 2026-10-12)
+
+Downloads IG's tiered-margin spreadsheet and loads a cleaned, AU/US-only
+subset into `sda.db`'s `ig_margins` table (PK `(code, download_date)` --
+this table keeps history, unlike most of this project's other tables).
+`code` is EODHD-form (`BHP.AU`, `AAPL.US`); `reuters` is kept alongside it
+as the original identifier. Two cleaning steps that aren't visible from
+the old script this was adapted from:
+- **Caret-suffixed Reuters codes** (e.g. `APT.AX^B22`) mark a RIC Reuters
+  has retired -- dropped entirely, not just stripped, since a reused
+  ticker otherwise collides with the live RIC under the same `code`.
+- **A known sentinel `tier1_range` value** (identical across unrelated
+  tickers, not a genuine per-security data point) -- `tier1_limit`/
+  `tier1_rate` are set `NULL` for these rows rather than "corrected".
+
+`ops/run_ig_margins.sh` (its own monthly `eodhd-ig-margins.timer`,
+independent of the weekday/Saturday/Sunday schedule) pulls/pushes the
+same `sda.db` used by `run_daily_update.sh` -- both wrappers now share
+their pull/push/staleness-check mechanism via `ops/lib_rclone_sync.sh`
+rather than duplicating it. It also archives the raw downloaded
+spreadsheet (every country, not just AU/US) to `IG_ARCHIVE_RCLONE_REMOTE`,
+for continuity with this script's predecessor's monthly archive on the
+old "nebula" machine. See `doc/DESIGN_DECISIONS.md` ("IG tiered margins")
+for the full investigation behind both cleaning steps and the rest of the
+design.
+
 ## Dependencies
 
 ```
 pandas
 polars
 pyarrow          # required for polars<->pandas bridge
+openpyxl         # reads the .xlsx IG tiered-margin spreadsheet
 exchange_calendars
 requests
 beautifulsoup4

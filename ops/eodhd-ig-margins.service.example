@@ -1,0 +1,17 @@
+# Copy to ops/eodhd-ig-margins.service (drop the .example), edit the
+# User=/WorkingDirectory=/ExecStart= paths for this machine, then symlink
+# or copy into /etc/systemd/system/ and `systemctl enable --now
+# eodhd-ig-margins.timer`. Gitignored because of those host-specific
+# absolute paths -- see doc/DESIGN_DECISIONS.md ("IG tiered margins").
+
+[Unit]
+Description=Monthly IG tiered-margin download/archive/load
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Change this to the account that owns the repo checkout and rclone config.
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/repos/eodhd2
+ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/run_ig_margins.sh

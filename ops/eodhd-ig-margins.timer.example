@@ -1,0 +1,19 @@
+# Copy to ops/eodhd-ig-margins.timer (drop the .example), then symlink or
+# copy into /etc/systemd/system/ and `systemctl enable --now`. No
+# host-specific paths in here (unlike the matching .service file) --
+# gitignored alongside it mainly so the set stays together.
+
+[Unit]
+Description=Run eodhd-ig-margins on the first of each month
+
+[Timer]
+# Matches the cadence of its predecessor's monthly archive on the old
+# "nebula" machine (first day of each month) -- see
+# doc/DESIGN_DECISIONS.md ("IG tiered margins"). No particular review
+# window to hit, so this just runs at a quiet local hour.
+OnCalendar=*-*-01 03:00:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

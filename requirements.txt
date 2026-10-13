@@ -1,6 +1,7 @@
 pandas
 polars
 pyarrow
+openpyxl
 exchange_calendars
 requests
 python-dotenv
