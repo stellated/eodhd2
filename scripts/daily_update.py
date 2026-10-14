@@ -145,22 +145,53 @@ def _log_unresolved_tips(db: Database) -> None:
     merged / cashed-out tickers"). Checked every run so this shows up in
     the log on its own, rather than needing someone to remember to run
     unresolved_tips() manually.
+
+    Checks intraday_5m as well as daily (added 2026-10-14): a tip can be
+    fine in daily but never have had its 5m window fetched at all -- the
+    2026-08-05..19 gap went unnoticed for weeks that way (see
+    doc/DESIGN_DECISIONS.md, "Daily fallback needs EODHD's confirmation,
+    not an empty table"). Tips whose outcome was resolved from daily bars
+    (fill_granularity='1d' -- EODHD has no intraday for them) are expected
+    to be short in intraday_5m, so they're counted, not listed.
     """
     all_tips = _all_tips(db, TIPS_TABLENAME)
-    problems = unresolved_tips(db, all_tips, PRICE_TABLENAME, PRICE_INTERVAL)
-    if problems.empty:
-        log.info("no unresolved tips")
-        return
-    log.warning(
-        "%d unresolved tip(s) -- window closed but price coverage still short, "
-        "likely needs a ticker_aliases entry (see doc/DESIGN_DECISIONS.md): %s",
-        len(problems),
-        "; ".join(
-            f"{row.code} (tip {row.tip_date}, {row.actual_days}d, "
-            f"last={row.last_available_date})"
-            for row in problems.itertuples()
-        ),
-    )
+    for tablename, interval in (
+        (PRICE_TABLENAME, PRICE_INTERVAL),
+        (INTRADAY_TABLENAME, INTRADAY_INTERVAL),
+    ):
+        if all_tips and not db._table_exists(tablename):
+            log.info("unresolved-tips check: no %s table yet, skipping", tablename)
+            continue
+        problems = unresolved_tips(db, all_tips, tablename, interval)
+        expected = 0
+        if tablename == INTRADAY_TABLENAME and not problems.empty and db._table_exists("outcomes"):
+            daily_resolved = {
+                (code, date.fromisoformat(tip_date))
+                for code, tip_date in db.conn.execute(
+                    "SELECT code, tip_date FROM outcomes WHERE fill_granularity = '1d'"
+                )
+            }
+            keep = [(c, d) not in daily_resolved for c, d in zip(problems.code, problems.tip_date)]
+            expected = len(problems) - sum(keep)
+            problems = problems[keep]
+        suffix = (f" ({expected} more resolved from daily bars, as expected)"
+                  if expected else "")
+        if problems.empty:
+            log.info("no unresolved tips in %s%s", tablename, suffix)
+            continue
+        log.warning(
+            "%d unresolved tip(s) in %s -- window closed but price coverage still "
+            "short, likely needs a ticker_aliases entry or a re-fetch (see "
+            "doc/DESIGN_DECISIONS.md)%s: %s",
+            len(problems),
+            tablename,
+            suffix,
+            "; ".join(
+                f"{row.code} (tip {row.tip_date}, {row.actual_days}d, "
+                f"last={row.last_available_date})"
+                for row in problems.itertuples()
+            ),
+        )
 
 
 def main() -> None:

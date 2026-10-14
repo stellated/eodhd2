@@ -104,6 +104,58 @@ def test_log_unresolved_tips_warns_on_closed_short_windows(tmp_path, caplog):
     assert any("unresolved tip" in rec.message for rec in caplog.records)
 
 
+def _seed_full_daily_and_intraday(db: Database, code: str, tip_date: date, intraday: bool) -> None:
+    """21 days of daily coverage from tip_date (enough for default n2=20),
+    and optionally the same days in intraday_5m."""
+    days = [(code, (tip_date + timedelta(days=i)).isoformat()) for i in range(21)]
+    db.conn.execute("CREATE TABLE IF NOT EXISTS daily (code TEXT, date TEXT)")
+    db.conn.executemany("INSERT INTO daily (code, date) VALUES (?, ?)", days)
+    db.conn.execute("CREATE TABLE IF NOT EXISTS intraday_5m (code TEXT, local_date TEXT)")
+    if intraday:
+        db.conn.executemany("INSERT INTO intraday_5m (code, local_date) VALUES (?, ?)", days)
+    db.conn.commit()
+
+
+def test_log_unresolved_tips_checks_intraday_too(tmp_path, caplog):
+    """Full daily coverage but no 5m window fetched -- the 2026-08-05..19
+    gap shape. Must be flagged against intraday_5m, not daily."""
+    tip_date = date.today() - timedelta(days=100)
+    with Database(tmp_path / "test.db") as db:
+        _seed_tip_details(db, [("NASDAQ", tip_date.isoformat(), 1, "GAP.US"),
+                               ("NASDAQ", tip_date.isoformat(), 2, "OK.US")])
+        _seed_full_daily_and_intraday(db, "GAP.US", tip_date, intraday=False)
+        _seed_full_daily_and_intraday(db, "OK.US", tip_date, intraday=True)
+
+        with caplog.at_level("INFO"):
+            _log_unresolved_tips(db)
+
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "intraday_5m" in warnings[0] and "GAP.US" in warnings[0]
+    assert "OK.US" not in warnings[0]
+    assert any("no unresolved tips in daily" in r.message for r in caplog.records)
+
+
+def test_log_unresolved_tips_intraday_skips_daily_resolved_outcomes(tmp_path, caplog):
+    """A tip whose outcome was resolved from daily bars (EODHD has no
+    intraday for it, e.g. a closed-end fund) is expected to be short in
+    intraday_5m -- counted, not listed as a problem."""
+    tip_date = date.today() - timedelta(days=100)
+    with Database(tmp_path / "test.db") as db:
+        _seed_tip_details(db, [("NYSE", tip_date.isoformat(), 1, "CEF.US")])
+        _seed_full_daily_and_intraday(db, "CEF.US", tip_date, intraday=False)
+        db.conn.execute("CREATE TABLE outcomes (code TEXT, tip_date TEXT, fill_granularity TEXT)")
+        db.conn.execute("INSERT INTO outcomes VALUES ('CEF.US', ?, '1d')", (tip_date.isoformat(),))
+        db.conn.commit()
+
+        with caplog.at_level("INFO"):
+            _log_unresolved_tips(db)
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("no unresolved tips in intraday_5m (1 more resolved from daily bars"
+               in r.message for r in caplog.records)
+
+
 def test_log_unresolved_tips_logs_info_when_nothing_to_report(tmp_path, caplog):
     with Database(tmp_path / "test.db") as db:
         with caplog.at_level("INFO"):

@@ -566,10 +566,12 @@ Each run:
    regardless of whether step 4 had anything to do), so this surfaces on its
    own rather than needing someone to remember to run `unresolved_tips()`
    manually. See `doc/DESIGN_DECISIONS.md` ("ticker_aliases...") for what to
-   do with a flagged tip. Currently only checks `PRICE_TABLENAME`/
-   `PRICE_INTERVAL` ("daily"/"1d") -- intentionally not yet extended to
-   `intraday_5m` (see `doc/DESIGN_DECISIONS.md`,
-   "weekday/Saturday/Sunday split").
+   do with a flagged tip. Checks both `PRICE_TABLENAME` ("daily") and
+   `INTRADAY_TABLENAME` ("intraday_5m", since 2026-10-14), one log line
+   each; in the intraday check, tips whose outcome has
+   `fill_granularity='1d'` (EODHD has no intraday for them) are counted
+   rather than listed. A missing price table is skipped with an `INFO`
+   line. Takes ~10s against the full production history.
 
 This backfill step exists because the newsletter arrives before US market
 open: the first time a brand-new tip is seen, `tips()` can only fetch the n1

@@ -598,11 +598,13 @@ which mattered a lot during the debugging in "tips() per-tip failure
 handling" above.
 
 **Deferred:** a weekday fetch for a "priority" subset of tickers/tips (Ian
-wants this eventually, not yet). `_log_unresolved_tips()` stays
-daily-price-only for now (not extended to check `intraday_5m` coverage) --
-once real 5-minute data exists, the plan is to audit it for consistency
-against the daily table directly, which is a more direct check than routing
-5-minute coverage through `unresolved_tips()` too.
+wants this eventually, not yet). `_log_unresolved_tips()` stayed
+daily-price-only at first (not extended to check `intraday_5m` coverage) --
+the plan was to audit 5-minute data for consistency against the daily
+table directly instead. Superseded 2026-10-14: it now runs
+`unresolved_tips()` against `intraday_5m` too, after that gap let the
+2026-08-05..19 5m windows go unfetched for weeks (see "Daily fallback
+needs EODHD's confirmation, not an empty table").
 
 ### --all-emails for a second independent consumer of the same mailbox (2026-09-30)
 **Problem:** Ian plans to run `daily_update.py` manually on his Mac, against
@@ -1449,10 +1451,11 @@ and have no intraday data, so neither change touches them; only a full
 outcomes rebuild would leave them `pending` until their next intraday
 fetch records the confirmation.
 
-**Not done (yet):** `_log_unresolved_tips()` still only checks `daily`.
-Checking `intraday_5m` nightly too would have surfaced the August gap
-weeks earlier -- see "weekday/Saturday/Sunday split" for why it was
-deferred originally.
+**Nightly detection:** `_log_unresolved_tips()` now also checks
+`intraday_5m` (it had been daily-only -- see "weekday/Saturday/Sunday
+split"), which would have surfaced the August gap weeks earlier. Tips
+whose outcome is `fill_granularity='1d'` are expected to be short there,
+so they're counted in the log line rather than listed as problems.
 
 ---
 
