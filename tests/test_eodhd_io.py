@@ -17,6 +17,7 @@ from src.eodhd_io import (
     _eodhd_fetch_csv,
     _fetch_daily_resolved,
     _fetch_intraday_resolved,
+    _NoIntradayData,
     _TransientEodhdResponse,
     add_local_time,
     add_ticker_alias,
@@ -470,6 +471,56 @@ def test_tips_intraday_writes_local_time(mock_get_calendar, mock_fetch_intraday,
         pdf = pd.read_sql("SELECT code, local_time FROM intraday_5m", db.conn)
 
     assert list(pdf["local_time"]) == ["09:30:00"]
+
+
+@mock.patch("src.eodhd_io.fetch_intraday")
+@mock.patch("src.eodhd_io._get_calendar")
+def test_tips_intraday_records_and_clears_eodhd_confirmed_unavailable(
+    mock_get_calendar, mock_fetch_intraday, tmp_path
+):
+    """An empty-but-valid EODHD intraday response is recorded in
+    intraday_unavailable (the daily-bar outcomes fallback relies on it), and
+    cleared again if a later fetch for the same tip does return data."""
+    mock_get_calendar.return_value = mock.MagicMock()  # unused: n1=0 short-circuits it
+    tip_date = date(2026, 9, 1)
+    ts = int(datetime(2026, 9, 1, 13, 30, tzinfo=timezone.utc).timestamp())
+
+    def query(db):
+        return db.conn.execute(
+            "SELECT code, tip_date, tablename FROM intraday_unavailable"
+        ).fetchall()
+
+    with Database(tmp_path / "test.db", api_token="fake_token") as db:
+        mock_fetch_intraday.side_effect = _NoIntradayData("CEF.US: zero data rows")
+        tips(db, [("CEF.US", tip_date)], "intraday_5m", "5m", n1=0, n2=0)
+        recorded = query(db)
+
+        mock_fetch_intraday.side_effect = lambda code, *a, **kw: pd.DataFrame({
+            "code": [code], "timestamp": [ts], "datetime": [pd.Timestamp(tip_date)],
+            "local_date": [tip_date],
+            "op": [100.0], "hi": [101.0], "lo": [99.0], "cl": [100.5], "vo": [1000],
+        })
+        tips(db, [("CEF.US", tip_date)], "intraday_5m", "5m", n1=0, n2=0)
+        cleared = query(db)
+
+    assert recorded == [("CEF.US", "2026-09-01", "intraday_5m")]
+    assert cleared == []
+
+
+@mock.patch("src.eodhd_io.fetch_intraday")
+@mock.patch("src.eodhd_io._get_calendar")
+def test_tips_intraday_other_failures_not_recorded_as_unavailable(
+    mock_get_calendar, mock_fetch_intraday, tmp_path
+):
+    """Only EODHD's own empty response counts as confirmation -- a
+    transient/garbled response must not be mistaken for "has no data"."""
+    mock_get_calendar.return_value = mock.MagicMock()
+    mock_fetch_intraday.side_effect = _TransientEodhdResponse("bad body")
+    with Database(tmp_path / "test.db", api_token="fake_token") as db:
+        tips(db, [("FLAKY.US", date(2026, 9, 1))], "intraday_5m", "5m", n1=0, n2=0)
+        assert not db._table_exists("intraday_unavailable") or db.conn.execute(
+            "SELECT COUNT(*) FROM intraday_unavailable"
+        ).fetchone()[0] == 0
 
 
 # --- Tests for unresolved_tips() ---

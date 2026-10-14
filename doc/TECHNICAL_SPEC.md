@@ -189,6 +189,12 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 - Requires db.api_token to be set
 - A per-tip fetch/store failure is logged (with a memory/disk snapshot via
   `_resource_snapshot()`) and skipped rather than aborting the whole call
+- For intraday fetches, an empty-but-valid EODHD response
+  (`_NoIntradayData`) is recorded in `intraday_unavailable` (PK `(code,
+  tip_date, tablename)`, plus `checked_on`) before being logged/skipped
+  like any other failure; a later successful fetch for the same tip
+  deletes the row. This is the confirmation the outcomes daily-bar
+  fallback requires.
 - For intraday fetches, calls `add_local_time()` on the result before
   trimming/storing -- `fetch_intraday()`/`csv2pandas_intraday()`
   deliberately don't include `local_time` themselves (see
@@ -228,13 +234,20 @@ design") for the full rationale behind every column and the status enum.
 - Recomputes every `pending`/`open` row against currently-available
   `intraday_5m` data, from scratch each call (not incremental).
 - Falls back to `daily` bars (`_load_bars_with_fallback()`) when a ticker
-  has zero `intraday_5m` rows at all and its window has permanently
-  closed -- e.g. thinly-traded closed-end funds EODHD never ticks
-  intraday for at any granularity. The resolved row is tagged
+  has zero `intraday_5m` rows at all, its window has permanently
+  closed, **and** EODHD itself confirmed it has no intraday data for that
+  tip (a row in `intraday_unavailable`, written by `tips()`) -- e.g.
+  thinly-traded closed-end funds EODHD never ticks intraday for at any
+  granularity. An empty table alone isn't enough: it can just mean
+  "never fetched". The resolved row is tagged
   `fill_granularity='1d'` (vs `'5m'` for the normal path) since daily
   bars are lower-fidelity (same-bar target/stop collisions are far more
   common with no intrabar ordering) -- see `doc/DESIGN_DECISIONS.md`,
   "Daily-bar outcomes fallback".
+- Before recomputing, `_reopen_daily_resolved_with_intraday()` deletes any
+  `fill_granularity='1d'` row whose ticker now has `intraday_5m` bars
+  on/after its tip_date, so it's reseeded `pending` and redone at 5m --
+  terminal rows are otherwise never revisited.
 - `pending` -> `aborted` (stop breached before ever entering) /
   `open` (entry zone touched) / `expired_unfilled` (window closed,
   neither happened) / stays `pending` (window still open).

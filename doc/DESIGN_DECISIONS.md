@@ -1399,6 +1399,61 @@ by the migration; and the predicted increase in same-bar-collision
 warnings was observed (9 new warnings), confirming the precision tradeoff
 is real and now visible rather than silent.
 
+### Daily fallback needs EODHD's confirmation, not an empty table (2026-10-14)
+**Problem:** running `unresolved_tips()` against `intraday_5m` (it had only
+ever been run against `daily`) flagged 95 tips. 91 were from 2026-08-05..19,
+the first fortnight of automation: their 5-minute data was simply never
+fetched (they aged out of the Sunday job's ~45-day still-open window before
+its first run on 2026-10-04, and the historical backfill stops at
+2026-08-04). For 102 of these tips -- mostly blue chips like KLAC, DASH,
+C -- `_load_bars_with_fallback()` saw "zero `intraday_5m` rows for this
+code, window closed" and resolved the outcome from daily bars, exactly as
+designed. But that condition was only ever a *proxy* for "EODHD has no
+intraday for this ticker"; it can't tell that apart from "nobody asked
+yet". EODHD had full 5m data for all of them. A second, compounding gap:
+once a row was terminal at `'1d'`, nothing ever revisited it, so even
+after 5m data was fetched the less precise result stuck.
+
+The data was fixed by hand the same day (re-fetch + delete/reseed of the
+affected rows -- see the "unresolved tips cleanup" notes); this entry is
+about stopping it recurring.
+
+**Decision:**
+1. **Positive evidence, not absence.** `csv2pandas_intraday()` now raises
+   `_NoIntradayData` (a `ValueError` subclass, so existing handling is
+   unchanged) for EODHD's well-formed-but-empty response. `tips()` catches
+   that one case and records `(code, tip_date, tablename)` in a new
+   `intraday_unavailable` table before re-raising into its usual
+   log-and-skip; any later successful fetch for the same tip deletes the
+   row. The fallback now additionally requires such a row. Other failures
+   (`_TransientEodhdResponse`, network errors) deliberately don't count --
+   only EODHD actually saying "nothing here" does.
+2. **Reopen when better data arrives.** `update_outcomes()` first deletes
+   any `'1d'` row whose ticker now has `intraday_5m` bars on/after its
+   tip_date (`_reopen_daily_resolved_with_intraday()`, logged), so
+   `_seed_new_outcomes()` re-adds it `pending` and it's recomputed at 5m in
+   the same call. This makes a wrong fallback self-correcting rather than
+   permanent.
+
+The existing "zero intraday rows for this code at all" condition is kept
+alongside the new one (conservative: a ticker with intraday elsewhere in
+time is still treated as a real gap to surface, not papered over).
+
+**Why per tip, not per ticker:** "EODHD has nothing" is only known for the
+window that was actually asked for; a ticker can gain intraday coverage
+later (e.g. an IPO). Keyed per tip it's exactly as strong as the evidence.
+
+**Existing production rows:** the four CEFs (EMF/AWP/CHY/JRS) resolved
+`'1d'` before this table existed have no confirmation row. They're terminal
+and have no intraday data, so neither change touches them; only a full
+outcomes rebuild would leave them `pending` until their next intraday
+fetch records the confirmation.
+
+**Not done (yet):** `_log_unresolved_tips()` still only checks `daily`.
+Checking `intraday_5m` nightly too would have surfaced the August gap
+weeks earlier -- see "weekday/Saturday/Sunday split" for why it was
+deferred originally.
+
 ---
 
 ## tips_io design

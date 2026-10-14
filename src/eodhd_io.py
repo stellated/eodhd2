@@ -278,6 +278,15 @@ class _TransientEodhdResponse(ValueError):
     """
 
 
+class _NoIntradayData(ValueError):
+    """Raised by csv2pandas_intraday() when EODHD returns a well-formed
+    intraday response with zero data rows -- i.e. EODHD was actually asked
+    and has nothing for this ticker/window. Distinct from a plain ValueError
+    so tips() can record it as positive evidence in intraday_unavailable
+    (see _load_bars_with_fallback()), rather than just logging and moving on.
+    """
+
+
 def _redact_token(url: str) -> str:
     return re.sub(r"api_token=[^&]+", "api_token=REDACTED", url)
 
@@ -382,7 +391,7 @@ def csv2pandas_intraday(code: str, csv_path: pathlib.Path, interval: str) -> pd.
     # padding loop below and fail with an opaque "No objects to
     # concatenate", several lines removed from the real cause.
     if raw.empty:
-        raise ValueError(
+        raise _NoIntradayData(
             f"{code}: EODHD intraday response had the expected columns but "
             f"zero data rows (no intraday history for this ticker/window)."
         )
@@ -1011,6 +1020,58 @@ def _fetch_intraday_resolved(
 
 
 # ---------------------------------------------------------------------------
+# intraday_unavailable: EODHD-confirmed "no intraday data for this tip"
+# ---------------------------------------------------------------------------
+
+# One row per (code, tip_date, tablename) whose intraday fetch in tips() came
+# back as a well-formed but empty response (_NoIntradayData). This is the
+# positive evidence _load_bars_with_fallback() needs before substituting
+# daily bars -- "zero intraday rows in the table" alone can't tell "EODHD
+# has none" apart from "never fetched" (see doc/DESIGN_DECISIONS.md, "daily
+# fallback needs EODHD's confirmation, not an empty table"). Cleared again
+# if a later fetch for the same tip does return data.
+_DDL_INTRADAY_UNAVAILABLE = """
+CREATE TABLE IF NOT EXISTS intraday_unavailable (
+    code TEXT NOT NULL,
+    tip_date TEXT NOT NULL,
+    tablename TEXT NOT NULL,
+    checked_on TEXT NOT NULL,
+    PRIMARY KEY (code, tip_date, tablename)
+);
+"""
+
+
+def _set_intraday_unavailable(
+    db: "Database", code: str, tip_date: date, tablename: str, unavailable: bool
+) -> None:
+    """Record (unavailable=True) or clear (False) EODHD's confirmation that
+    it has no intraday data for this tip's fetch window."""
+    db.conn.execute(_DDL_INTRADAY_UNAVAILABLE)
+    if unavailable:
+        db.conn.execute(
+            "INSERT OR REPLACE INTO intraday_unavailable VALUES (?, ?, ?, ?)",
+            (code, tip_date.isoformat(), tablename, date.today().isoformat()),
+        )
+    else:
+        db.conn.execute(
+            "DELETE FROM intraday_unavailable WHERE code = ? AND tip_date = ? AND tablename = ?",
+            (code, tip_date.isoformat(), tablename),
+        )
+    db.conn.commit()
+
+
+def _intraday_confirmed_unavailable(
+    db: "Database", code: str, tip_date: date, tablename: str = "intraday_5m"
+) -> bool:
+    if not db._table_exists("intraday_unavailable"):
+        return False
+    return db.conn.execute(
+        "SELECT 1 FROM intraday_unavailable WHERE code = ? AND tip_date = ? AND tablename = ?",
+        (code, tip_date.isoformat(), tablename),
+    ).fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
 # NEW: tips()
 # ---------------------------------------------------------------------------
 
@@ -1083,7 +1144,16 @@ def tips(
                 to_ts = int(
                     datetime(cal_end.year, cal_end.month, cal_end.day, 23, 59, 59).timestamp()
                 ) + 86400
-                pdf = _fetch_intraday_resolved(db, code, db.api_token, interval, from_ts, to_ts)
+                try:
+                    pdf = _fetch_intraday_resolved(db, code, db.api_token, interval, from_ts, to_ts)
+                except _NoIntradayData:
+                    # EODHD was asked and has nothing -- record that, so
+                    # update_outcomes()' daily fallback can tell this apart
+                    # from "never fetched". Still re-raised: logged/skipped
+                    # below exactly as before.
+                    _set_intraday_unavailable(db, code, tip_date, tablename, True)
+                    raise
+                _set_intraday_unavailable(db, code, tip_date, tablename, False)
                 # Intentionally added here (not by fetch_intraday()/
                 # csv2pandas_intraday(), which deliberately omit it -- see
                 # doc/DESIGN_DECISIONS.md, "local_time is optional"): this is
@@ -1523,10 +1593,17 @@ def _load_bars_with_fallback(
     - the tip's window has permanently closed (tip_date + n2*2+5 calendar
       days in the past -- the same buffer unresolved_tips() uses to call a
       coverage gap "permanent" rather than "still filling in"), and
+    - EODHD itself has confirmed it has no intraday data for this tip's
+      window: tips() recorded an empty response in intraday_unavailable.
+      An empty intraday_5m alone is NOT enough -- it can equally mean the
+      data was simply never fetched (e.g. tips 2026-08-05..19, which aged
+      out of the Sunday job's still-open window before its first run and
+      got wrongly resolved here from daily bars, despite EODHD having full
+      5m data for them -- see doc/DESIGN_DECISIONS.md, "daily fallback
+      needs EODHD's confirmation, not an empty table"), and
     - intraday_5m has zero rows for this code at all (not just from
-      from_date onward) -- confirms EODHD has never had any intraday
-      history for this ticker, rather than this code's data just not
-      having been fetched yet this week.
+      from_date onward) -- a ticker with intraday elsewhere in time but
+      not from this anchor is a real coverage gap; don't paper over it.
 
     Discovered via a real case: several thinly-traded closed-end funds
     (EMF.US, AWP.US, CHY.US, JRS.US) have complete daily coverage but
@@ -1554,6 +1631,9 @@ def _load_bars_with_fallback(
     n2 = n2 if n2 is not None else DEFAULT_N2
     if tip_date + timedelta(days=n2 * 2 + 5) >= date.today():
         return bars, None  # window still open -- real intraday might still arrive
+
+    if not _intraday_confirmed_unavailable(db, code, tip_date):
+        return bars, None  # possibly just never fetched -- don't guess
 
     if db._table_exists("intraday_5m"):
         ever_count = db.conn.execute(
@@ -1639,6 +1719,32 @@ def _write_position(db: "Database", tablename: str, pos: dict) -> None:
     db.conn.commit()
 
 
+def _reopen_daily_resolved_with_intraday(db: "Database", tablename: str) -> None:
+    """Delete any fill_granularity='1d' row whose ticker now has intraday_5m
+    bars on/after its tip_date, so _seed_new_outcomes() re-adds it as
+    'pending' and it's recomputed at 5m fidelity. Terminal rows are
+    otherwise never revisited, so without this a daily-bar result would
+    stick even after the better data arrives.
+    """
+    if not db._table_exists("intraday_5m"):
+        return
+    stale = db.conn.execute(
+        f"SELECT code, tip_date FROM {tablename} o WHERE fill_granularity = '1d' "  # noqa: S608
+        f"AND EXISTS (SELECT 1 FROM intraday_5m i "
+        f"WHERE i.code = o.code AND i.local_date >= o.tip_date)"
+    ).fetchall()
+    if not stale:
+        return
+    logging.info(
+        f"Reopening {len(stale)} daily-bar-resolved outcome(s) now that intraday_5m "
+        f"data exists for them: {', '.join(f'{c} {d}' for c, d in stale)}"
+    )
+    db.conn.executemany(
+        f"DELETE FROM {tablename} WHERE code = ? AND tip_date = ?", stale  # noqa: S608
+    )
+    db.conn.commit()
+
+
 def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
     """Recompute every non-terminal outcomes row against whatever price
     data is currently available. Seeds a new 'pending' row for every tip
@@ -1666,6 +1772,7 @@ def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
             f"WHERE fill_granularity IS NULL AND status NOT IN ('pending', 'open')"
         )
         db.conn.commit()
+    _reopen_daily_resolved_with_intraday(db, tablename)
     _seed_new_outcomes(db, tablename)
 
     for pos in _load_positions(db, tablename, statuses=["pending", "open"]):

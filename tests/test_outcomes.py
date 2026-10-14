@@ -20,6 +20,7 @@ from src.eodhd_io import (
     _load_tip,
     _seed_new_outcomes,
     _sell_fields,
+    _set_intraday_unavailable,
     _time_exit_due,
     _zone_touched,
     pandas2sqlite,
@@ -601,6 +602,7 @@ _RECENT_TIP_DATE = date.today() - timedelta(days=5)
 
 def test_load_bars_with_fallback_uses_daily_when_no_intraday_ever_and_window_closed(tmp_path):
     with Database(tmp_path / "test.db") as db:
+        _set_intraday_unavailable(db, "CEF.US", _OLD_TIP_DATE, "intraday_5m", True)
         _seed_daily_bars(db, "CEF.US", [
             {"timestamp": 1, "date": _OLD_TIP_DATE,
              "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
@@ -673,6 +675,7 @@ def test_update_outcomes_end_to_end_resolves_via_daily_fallback(tmp_path):
     '1d' so a later stats pass can tell it apart from a 5m-resolved row."""
     with Database(tmp_path / "test.db") as db:
         _seed_full_tip(db, code="CEF.US", tip_date=_OLD_TIP_DATE.isoformat())
+        _set_intraday_unavailable(db, "CEF.US", _OLD_TIP_DATE, "intraday_5m", True)
         _seed_daily_bars(db, "CEF.US", [
             {"timestamp": 1, "date": _OLD_TIP_DATE,
              "op": 11.0, "hi": 11.1, "lo": 10.9, "cl": 11.0, "vo": 1000},
@@ -687,6 +690,53 @@ def test_update_outcomes_end_to_end_resolves_via_daily_fallback(tmp_path):
             "FROM outcomes WHERE code = 'CEF.US'"
         ).fetchone()
     assert row == ("closed_target", 10.5, 12.0, "1d")
+
+def test_load_bars_with_fallback_needs_eodhd_confirmation_not_just_empty_table(tmp_path):
+    """The 2026-08-05..19 case: zero intraday rows ever, window closed, but
+    only because nobody fetched it -- EODHD never said it had nothing. Must
+    not fall back to daily (that wrongly resolved ~100 blue-chip tips)."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "KLAC.US", [
+            {"timestamp": 1, "date": _OLD_TIP_DATE,
+             "op": 10.0, "hi": 10.2, "lo": 9.9, "cl": 10.1, "vo": 1000},
+        ])
+        bars, granularity = _load_bars_with_fallback(
+            db, "KLAC.US", from_date=_OLD_TIP_DATE, tip_date=_OLD_TIP_DATE
+        )
+    assert granularity is None
+    assert bars.is_empty()
+
+def test_update_outcomes_reopens_daily_resolved_row_once_intraday_arrives(tmp_path):
+    """A '1d'-resolved row is recomputed at 5m as soon as intraday_5m has
+    bars for its window -- terminal rows are otherwise never revisited."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_full_tip(db, code="LATE.US", tip_date=_OLD_TIP_DATE.isoformat())
+        _set_intraday_unavailable(db, "LATE.US", _OLD_TIP_DATE, "intraday_5m", True)
+        # Daily: stop hit on day 1 (after entering on day 0).
+        _seed_daily_bars(db, "LATE.US", [
+            {"timestamp": 1, "date": _OLD_TIP_DATE,
+             "op": 11.0, "hi": 11.1, "lo": 10.4, "cl": 10.5, "vo": 1000},
+            {"timestamp": 2, "date": _OLD_TIP_DATE + timedelta(days=1),
+             "op": 10.5, "hi": 10.6, "lo": 8.5, "cl": 8.7, "vo": 2000},
+        ])
+        update_outcomes(db)
+        first = db.conn.execute(
+            "SELECT status, fill_granularity FROM outcomes WHERE code = 'LATE.US'"
+        ).fetchone()
+
+        # Intraday turns up later: target hit after entry, never the stop.
+        _seed_intraday_bars(db, "LATE.US", [
+            {"timestamp": 10, "local_date": _OLD_TIP_DATE, "local_time": "09:30:00",
+             "op": 11.0, "hi": 11.1, "lo": 10.4, "cl": 10.5, "vo": 1000},
+            {"timestamp": 11, "local_date": _OLD_TIP_DATE, "local_time": "09:35:00",
+             "op": 10.5, "hi": 12.2, "lo": 10.5, "cl": 12.1, "vo": 1000},
+        ])
+        update_outcomes(db)
+        second = db.conn.execute(
+            "SELECT status, fill_granularity FROM outcomes WHERE code = 'LATE.US'"
+        ).fetchone()
+    assert first == ("closed_stop", "1d")
+    assert second == ("closed_target", "5m")
 
 def test_update_outcomes_migration_tags_preexisting_resolved_rows_as_5m(tmp_path):
     """A row resolved before fill_granularity existed was necessarily
