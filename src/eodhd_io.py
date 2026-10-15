@@ -1215,7 +1215,8 @@ def unresolved_tips(
     n2: Optional[int] = None,
 ) -> pd.DataFrame:
     """Tips whose backfill window has fully elapsed but whose post-tip-date
-    price coverage in `tablename` is still short of n2 days.
+    price coverage in `tablename` -- distinct dates within tip_date ..
+    tip_date + n2*2+5 calendar days -- is still short of n2 days.
 
     This is the closed counterpart to daily_update.py's _still_open_tips():
     that one re-requests tips that haven't had enough calendar time to
@@ -1258,14 +1259,20 @@ def unresolved_tips(
 
     rows = []
     for code, tip_date in tip_list:
-        if tip_date + timedelta(days=n2 * 2 + 5) >= today:
+        window_end = tip_date + timedelta(days=n2 * 2 + 5)
+        if window_end >= today:
             continue  # window still open -- _still_open_tips()'s job, not this one
 
+        # Distinct dates, bounded to this tip's own window: an unbounded
+        # count let a later tip's rows for the same ticker stand in for a
+        # window that was never fetched, and counting rows rather than dates
+        # let a single day of intraday bars pass (2026-10-15).
         found = sorted(
             date.fromisoformat(r[0])
             for r in db.conn.execute(
-                f"SELECT {date_col} FROM {tablename} WHERE code = ? AND {date_col} >= ?",  # noqa: S608
-                (code, tip_date.isoformat()),
+                f"SELECT DISTINCT {date_col} FROM {tablename} "  # noqa: S608
+                f"WHERE code = ? AND {date_col} BETWEEN ? AND ?",
+                (code, tip_date.isoformat(), window_end.isoformat()),
             )
         )
         if len(found) < n2 + 1:  # same threshold tips() itself warns on

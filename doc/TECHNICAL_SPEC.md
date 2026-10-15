@@ -206,7 +206,10 @@ DEFAULT_N2 = 20  # trading days after tip date for tips()
 -> pd.DataFrame**
 - Tips whose backfill window has fully elapsed (`tip_date + n2*2+5` calendar
   days is in the past) but whose price coverage in `tablename` is still
-  short of n2 days -- the closed counterpart to daily_update.py's
+  short of n2 days. Coverage is distinct dates within the tip's own
+  window (`tip_date` .. `tip_date + n2*2+5`), so another tip's later rows
+  for the same ticker don't count, and a day of intraday bars counts once
+  (both fixed 2026-10-15). The closed counterpart to daily_update.py's
   `_still_open_tips()`. Usually means the ticker was renamed, split, or
   merged (EODHD doesn't follow a ticker through those events) rather than
   an actual loss -- see `ticker_aliases` below and
@@ -574,6 +577,14 @@ Each run:
    `fill_granularity='1d'` (EODHD has no intraday for them) are counted
    rather than listed. A missing price table is skipped with an `INFO`
    line. Takes ~10s against the full production history.
+6. Calls `_log_stale_tickers(db)`: warns about any tip at least
+   `STALE_TICKER_MIN_AGE_DAYS` (7) old whose symbol has no `daily` bars in
+   the `STALE_TICKER_LOOKBACK_DAYS` (14) up to tip_date, skipping tickers
+   that already have an alias effective by tip_date. The newsletter charts
+   a stock before tipping it, so this means it tipped under an old ticker
+   (BLBX, ELWS) -- caught a week after the tip rather than once the window
+   closes. The entry zone is logged to compare against candidate
+   successors' closes. Runs every mode, like step 5.
 
 This backfill step exists because the newsletter arrives before US market
 open: the first time a brand-new tip is seen, `tips()` can only fetch the n1

@@ -577,6 +577,34 @@ def test_unresolved_tips_flags_closed_short_windows_only(tmp_path):
     assert zero["last_available_date"] is None
 
 
+def test_unresolved_tips_ignores_rows_outside_the_tip_window(tmp_path):
+    """IESC-style: the tip's own window was never fetched, but a later tip
+    of the same ticker left plenty of rows further on. Those mustn't count."""
+    n2 = 5
+    tip_date = date.today() - timedelta(days=100)
+    later = tip_date + timedelta(days=n2 * 2 + 5 + 1)  # just past the window
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_dates(db, [("X.US", (later + timedelta(days=i)).isoformat())
+                               for i in range(n2 + 1)])
+        result = unresolved_tips(db, [("X.US", tip_date)], "daily", "1d", n2=n2)
+
+    assert list(result["code"]) == ["X.US"]
+    assert result.iloc[0]["actual_days"] == 0
+
+
+def test_unresolved_tips_counts_intraday_days_not_bars(tmp_path):
+    """One day of 5m bars is one day of coverage, not 78."""
+    tip_date = date.today() - timedelta(days=100)
+    with Database(tmp_path / "test.db") as db:
+        db.conn.execute("CREATE TABLE intraday_5m (code TEXT, local_date TEXT)")
+        db.conn.executemany("INSERT INTO intraday_5m VALUES (?, ?)",
+                            [("X.US", tip_date.isoformat())] * 78)
+        result = unresolved_tips(db, [("X.US", tip_date)], "intraday_5m", "5m")
+
+    assert list(result["code"]) == ["X.US"]
+    assert result.iloc[0]["actual_days"] == 1
+
+
 # --- Tests for ticker_aliases / add_ticker_alias() / _fetch_daily_resolved() ---
 def _daily_row(code, d, price, vo=100):
     return pd.DataFrame({

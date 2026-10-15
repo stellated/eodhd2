@@ -21,6 +21,9 @@ closed but price coverage is still short, usually meaning EODHD stopped
 following a ticker through a rename/split/merger and a ticker_aliases entry
 is needed -- see _log_unresolved_tips() and doc/DESIGN_DECISIONS.md
 ("ticker_aliases: smoothing renamed / split / merged / cashed-out tickers").
+It also logs tips whose symbol had no daily bars at all just before
+tip_date -- the newsletter tipping a stock under an old ticker -- a week
+after the tip rather than once its window closes; see _log_stale_tickers().
 
 intraday-price runs also call update_outcomes() after the price fetch --
 the outcomes table's entry/exit trigger logic is entirely 5-minute-bar
@@ -194,6 +197,67 @@ def _log_unresolved_tips(db: Database) -> None:
         )
 
 
+# A stale-ticker tip is only checked once a Saturday daily-price run has had
+# the chance to fetch its pre-tip history (the n1 days before are available
+# from day 0).
+STALE_TICKER_MIN_AGE_DAYS = 7
+# How far before tip_date to look for any daily bar under the tipped symbol.
+STALE_TICKER_LOOKBACK_DAYS = 14
+
+
+def _log_stale_tickers(db: Database, today: date | None = None) -> None:
+    """Surface tips whose symbol had no daily bars at all in the
+    STALE_TICKER_LOOKBACK_DAYS up to tip_date. The newsletter charts a stock
+    before tipping it, so no recent history under that symbol means it
+    tipped the stock under an old ticker (BLBX->ALOY, ELWS->PDC), not that
+    EODHD stopped following it afterwards.
+
+    Unlike _log_unresolved_tips(), this doesn't wait ~45 days for the tip's
+    window to close -- it fires a week after the tip. The entry zone is
+    logged too: compare it with a candidate successor's close the day
+    before tip_date (see doc/TICKER_ALIASES.md, "Lessons").
+    """
+    if not (db._table_exists(TIPS_TABLENAME) and db._table_exists(PRICE_TABLENAME)):
+        return
+    today = today or date.today()
+    # Already aliased: the next daily-price run fills it in, and
+    # _log_unresolved_tips() catches it if the alias doesn't help.
+    aliased = (
+        "AND NOT EXISTS (SELECT 1 FROM ticker_aliases a "
+        "WHERE a.old_code = t.code AND a.effective_date <= t.tip_date)"
+        if db._table_exists("ticker_aliases") else ""
+    )
+    rows = db.conn.execute(
+        f"""
+        SELECT t.code, t.tip_date, MIN(t.entry_zone_low), MAX(t.entry_zone_high)
+        FROM {TIPS_TABLENAME} t
+        WHERE t.code IS NOT NULL AND t.tip_date <= ?
+          AND NOT EXISTS (
+              SELECT 1 FROM {PRICE_TABLENAME} d
+              WHERE d.code = t.code
+                AND d.date BETWEEN date(t.tip_date, ?) AND t.tip_date)
+          {aliased}
+        GROUP BY t.code, t.tip_date
+        ORDER BY t.tip_date, t.code
+        """,  # noqa: S608
+        ((today - timedelta(days=STALE_TICKER_MIN_AGE_DAYS)).isoformat(),
+         f"-{STALE_TICKER_LOOKBACK_DAYS} days"),
+    ).fetchall()
+    if not rows:
+        log.info("no stale-ticker tips in %s", PRICE_TABLENAME)
+        return
+    log.warning(
+        "%d tip(s) with no %s bars in the %d days before tip_date -- likely tipped "
+        "under an old ticker; find the new symbol and add a ticker_aliases entry "
+        "(see doc/TICKER_ALIASES.md): %s",
+        len(rows),
+        PRICE_TABLENAME,
+        STALE_TICKER_LOOKBACK_DAYS,
+        "; ".join(f"{code} (tip {tip_date}, entry {low}-{high})"
+                  for code, tip_date, low, high in rows),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db-path", required=True, type=Path)
@@ -324,6 +388,7 @@ def main() -> None:
                 log.info("updated outcomes")
 
         _log_unresolved_tips(db)
+        _log_stale_tickers(db)
 
 
 if __name__ == "__main__":

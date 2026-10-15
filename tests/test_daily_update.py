@@ -3,7 +3,13 @@ from datetime import date, timedelta
 
 import pytest
 
-from scripts.daily_update import _all_tips, _log_unresolved_tips, _still_open_tips, main
+from scripts.daily_update import (
+    _all_tips,
+    _log_stale_tickers,
+    _log_unresolved_tips,
+    _still_open_tips,
+    main,
+)
 from src.eodhd_io import Database
 
 
@@ -162,6 +168,75 @@ def test_log_unresolved_tips_logs_info_when_nothing_to_report(tmp_path, caplog):
             _log_unresolved_tips(db)
 
     assert any("no unresolved tips" in rec.message for rec in caplog.records)
+
+
+def _seed_stale_ticker_db(
+    db: Database, tips: list[tuple[str, str]], daily: list[tuple[str, str]]
+) -> None:
+    db.conn.execute(
+        "CREATE TABLE tip_details (exchange TEXT, tip_date TEXT, tip_n INTEGER, code TEXT, "
+        "entry_zone_low REAL, entry_zone_high REAL)"
+    )
+    db.conn.executemany(
+        "INSERT INTO tip_details VALUES ('NASDAQ', ?, ?, ?, 7.08, 7.22)",
+        [(tip_date, n, code) for n, (code, tip_date) in enumerate(tips, 1)],
+    )
+    _seed_daily_dates(db, daily)
+
+
+def test_log_stale_tickers_flags_tip_with_no_recent_history(tmp_path, caplog):
+    """ELWS shape: the newsletter tipped a symbol EODHD has no bars for
+    around the tip date (renamed months earlier). Flagged a week after the
+    tip -- without waiting for the window to close -- with the entry zone."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_stale_ticker_db(
+            db,
+            [("STALE.US", "2026-05-15"), ("OK.US", "2026-05-15"),
+             ("OLDDATA.US", "2026-05-15")],
+            [("OK.US", "2026-05-14"),
+             ("OLDDATA.US", "2026-01-16")],  # history, but long before the tip
+        )
+        with caplog.at_level("INFO"):
+            _log_stale_tickers(db, today=date(2026, 5, 22))
+
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "STALE.US (tip 2026-05-15, entry 7.08-7.22)" in warnings[0]
+    assert "OLDDATA.US" in warnings[0]
+    assert "OK.US" not in warnings[0]
+
+
+def test_log_stale_tickers_waits_for_first_daily_fetch(tmp_path, caplog):
+    """A tip younger than STALE_TICKER_MIN_AGE_DAYS may simply not have
+    had its daily-price run yet -- don't flag it."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_stale_ticker_db(db, [("NEW.US", "2026-05-15")], [])
+        with caplog.at_level("INFO"):
+            _log_stale_tickers(db, today=date(2026, 5, 21))
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("no stale-ticker tips" in r.message for r in caplog.records)
+
+
+def test_log_stale_tickers_skips_already_aliased(tmp_path, caplog):
+    with Database(tmp_path / "test.db") as db:
+        _seed_stale_ticker_db(db, [("OLDSYM.US", "2026-05-15")], [])
+        db.conn.execute(
+            "CREATE TABLE ticker_aliases (old_code TEXT, new_code TEXT, effective_date TEXT)")
+        db.conn.execute(
+            "INSERT INTO ticker_aliases VALUES ('OLDSYM.US', 'NEWSYM.US', '2026-01-20')")
+        with caplog.at_level("INFO"):
+            _log_stale_tickers(db, today=date(2026, 5, 22))
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_log_stale_tickers_missing_tables_is_silent(tmp_path, caplog):
+    with Database(tmp_path / "test.db") as db:
+        with caplog.at_level("INFO"):
+            _log_stale_tickers(db)
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 def _run_main_with_argv(monkeypatch, argv):

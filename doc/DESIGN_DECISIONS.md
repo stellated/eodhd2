@@ -1457,6 +1457,38 @@ split"), which would have surfaced the August gap weeks earlier. Tips
 whose outcome is `fill_granularity='1d'` are expected to be short there,
 so they're counted in the log line rather than listed as problems.
 
+### Stale-ticker check, and unresolved_tips() counted the wrong rows (2026-10-15)
+**Problem:** BLBX and ELWS were both tipped months after a ticker change
+(-> ALOY, -> PDC), so EODHD had nothing under the tipped symbol at all.
+`unresolved_tips()` only flags a tip once its ~45-day window has closed,
+so each took six weeks or more to surface.
+
+**Decision:** `_log_stale_tickers()` in `daily_update.py` warns, from a
+week after the tip, about any tip whose symbol has no `daily` bars in the
+14 days up to tip_date. The newsletter charts a stock before tipping it,
+so missing *pre*-tip history is a much sharper signal than short post-tip
+coverage: a merger or delisting after the tip (CTRA) leaves pre-tip
+history intact and stays `unresolved_tips()`'s job. Tickers with an alias
+already effective by tip_date are skipped. The entry zone goes in the log
+line because matching it against a candidate's prior close is how BLBX
+and ELWS were confirmed (see `doc/TICKER_ALIASES.md`).
+
+**What the first run against production found instead:** 31 ordinary
+tickers (AVGO, ADI, GLW...) from 2026-08-05..14. Their `daily` windows
+had never been fetched -- the same aging-out as the 5m gap in the entry
+above, never checked for `daily`. `unresolved_tips()` hadn't noticed
+because it counted every row from tip_date onward with no upper bound, so
+a later tip's rows for the same ticker covered for the missing window
+(IESC's 08-14 tip "had" 24 days, all from 09-08 on). It also counted rows,
+not dates, so one day of 5m bars (~78 rows) passed the 21-day threshold.
+
+**Fix:** `unresolved_tips()` now counts distinct dates within the tip's
+own window (`tip_date` .. `tip_date + n2*2+5`). Re-fetched `daily` for all
+320 tips from 2026-08-05..14; the `daily` check is back to HOOZ/THR and
+the stale-ticker check is clean. The corrected count also flags 42 tips
+from 2026-08-05..19 with partial `intraday_5m` windows (6-20 days),
+which the row count had hidden.
+
 ---
 
 ## tips_io design
