@@ -11,7 +11,8 @@ cutover, why volume isn't rescaled), see `doc/DESIGN_DECISIONS.md`,
 The first five were researched in detail in
 `doc/DELISTING_RESEARCH_2026-09-30.md`.
 
-Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases.
+Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (16 as of
+2026-10-15).
 
 ## Renames (new_code, ratio 1.0)
 
@@ -19,6 +20,7 @@ Same listed security under a new symbol; one continuous price series.
 
 | old_code | new_code | effective_date | Added | Tip dates affected | What happened / how verified |
 |---|---|---|---|---|---|
+| ELWS.US | PDC.US | 2026-01-20 | 2026-10-15 | 2026-05-15 | Earlyworks Co., Ltd. ticker change (last ELWS trade 2026-01-16). 2026-01-16 close 7.06 identical on both. Newsletter still tipped it as ELWS four months later; entry_zone_low 7.08 equals PDC's 2026-05-14 close exactly. |
 | FLGC.US | ZSTK.US | 2026-01-29 | 2026-09-30 | 2026-08-27 | Flora Growth Corp. renamed ZeroStack Corp. (last FLGC trade 2026-01-28). 2026-01-28 close 8.95 identical on both symbols. |
 | NISN.US | AIOS.US | 2026-02-12 | 2026-10-12 | 2026-09-21 | Ticker-only rename to AIOS Tech Inc. (GlobeNewswire/Finviz). |
 | BLBX.US | ALOY.US | 2026-02-25 | 2026-10-14 | 2026-08-13 | Blackboxstocks Inc. renamed REalloys Inc. The newsletter still tipped it as BLBX six months later; the tip's entry_zone_low (12.54) equals ALOY's 2026-08-12 close exactly, so it was charting ALOY under the stale symbol. EODHD serves nothing for BLBX.US, hence effective from the rename date. |
@@ -38,6 +40,7 @@ boundary is `ratio × new_code`.
 | old_code | new_code | ratio | effective_date | Added | Tip dates affected | What happened / how verified |
 |---|---|---|---|---|---|---|
 | AMWD.US | MBC.US | 5.150 | 2026-05-29 | 2026-10-14 | 2026-04-30 | American Woodmark merged into MasterBrand Corp, completed 2026-05-28. 5.150 × MBC (~9.08–9.31) ≈ 46.8–47.9, consistent with AMWD's 48.09 close during the final arbitrage-spread days. |
+| CTRA.US | DVN.US | 0.700 | 2026-05-07 | 2026-10-15 | 2026-05-06 | Coterra Energy acquired by Devon Energy, all-stock, completed 2026-05-07 (Devon 10-Q/8-K). Last CTRA close 32.56 vs 0.70 × DVN 46.60 = 32.62. Outcome unaffected (already `aborted` on 05-06); alias only completes coverage. |
 | LBRDA.US | CHTR.US | 0.236 | 2026-08-20 | 2026-09-30 | 2026-08-18 | Liberty Broadband Series A acquired by Charter, effective 2026-08-19. 0.236 × CHTR 152.47 = 35.98 vs LBRDA last close 35.99. |
 
 ## Cash takeovers (cash_price, no successor)

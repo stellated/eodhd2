@@ -299,7 +299,7 @@ cash_price=None, reason=None)**
   `Database.to_pandas()` -- no separate backfill step.
 - Seeded 2026-09-30 with 5 rows: GMGI.US->MRDN.US, FDP.US->DMC.US,
   VSCO.US->VSXY.US, FLGC.US->ZSTK.US (all ratio 1.0), LBRDA.US->CHTR.US
-  (ratio 0.236). 14 rows as of 2026-10-14 -- see `doc/TICKER_ALIASES.md`
+  (ratio 0.236). 16 rows as of 2026-10-15 -- see `doc/TICKER_ALIASES.md`
   for the full list with reasons, plus tips investigated where no alias
   applies. Add a line there whenever an alias is added.
 
