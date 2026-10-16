@@ -254,6 +254,34 @@ def test_check_pending_ignores_zero_volume_bar_breaching_stop():
     assert result == pos
 
 
+def test_check_pending_bar_opening_below_stop_aborts_even_if_it_reaches_zone():
+    # Gapped below the stop, then rallied into the zone: the setup was
+    # broken before any trade, so no entry.
+    tip = _tip()
+    bars = _bars([_bar(1, date(2026, 1, 5), "09:30:00", 8.8, 10.2, 8.5, 10.1)])
+    assert _check_pending(_pos(), bars, tip)["status"] == "aborted"
+
+
+@pytest.mark.parametrize("op, hi, expected_same_bar", [
+    (10.2, 10.3, "entry_stop"),          # opened inside the zone: certain entry (WS.US)
+    (11.0, 11.0, "entry_stop"),          # fell from above through the zone
+    (9.5, 10.2, "entry_stop"),           # opened between stop and zone
+    (10.2, 12.5, "entry_target_stop"),   # covered all three levels
+])
+def test_bar_touching_zone_and_stop_enters_then_stops_out(op, hi, expected_same_bar):
+    """A bar reaching both the entry zone and the stop (without opening
+    below the stop) is an entry stopped out on the same bar -- worst case,
+    not 'aborted' at 0R."""
+    tip = _tip()
+    bars = _bars([_bar(1, date(2026, 1, 5), "09:30:00", op, hi, 8.5, 9.0)])
+    result = _advance_position(_pos(), bars, tip)
+    assert result["status"] == "closed_stop"
+    assert result["same_bar"] == expected_same_bar
+    assert result["buy_timestamp"] == result["sell_timestamp"] == 1
+    assert result["sell_trigger_price"] == 9.0
+    assert result["r_multiple"] < -1.0  # a full stop-out plus slippage both legs
+
+
 # --- _check_open ----------------------------------------------------------
 
 def test_check_open_hits_target():
@@ -267,6 +295,7 @@ def test_check_open_hits_target():
     result = _check_open(pos, bars, tip)
     assert result["status"] == "closed_target"
     assert result["sell_trigger_price"] == 12.0
+    assert result["same_bar"] is None
 
 def test_check_open_hits_stop():
     tip = _tip()
@@ -291,6 +320,7 @@ def test_check_open_same_bar_collision_assumes_stop_and_warns(caplog):
     with caplog.at_level("WARNING"):
         result = _check_open(pos, bars, tip)
     assert result["status"] == "closed_stop"
+    assert result["same_bar"] == "target_stop"
     assert any("both target and stop" in r.message for r in caplog.records)
 
 def test_check_open_same_bar_as_entry_warns(caplog):
@@ -303,9 +333,10 @@ def test_check_open_same_bar_as_entry_warns(caplog):
     with caplog.at_level("WARNING"):
         result = _check_open(pos, bars, tip)
     assert result["status"] == "closed_target"
+    assert result["same_bar"] == "entry_target"
     assert any("same bar as entry" in r.message for r in caplog.records)
 
-def test_check_open_time_exit_uses_last_close():
+def test_check_open_time_exit_sells_at_deadline_day_close():
     tip = _tip(holding_period_high=1)
     pos = _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,
                 buy_price=10.5, risk_per_share=1.5)
@@ -316,7 +347,10 @@ def test_check_open_time_exit_uses_last_close():
     ])
     result = _check_open(pos, bars, tip)
     assert result["status"] == "closed_time"
-    assert result["sell_trigger_price"] == 10.95
+    # holding_period_high=1: held through day 1, so day 1's close --
+    # day 2's bar only shows the deadline has passed.
+    assert result["sell_trigger_price"] == 10.7
+    assert result["sell_timestamp"] == 2
 
 def test_check_open_stays_open_if_nothing_triggers():
     tip = _tip(holding_period_high=5)
@@ -370,6 +404,48 @@ def test_check_open_time_exit_uses_last_real_close_not_padded_close():
     result = _check_open(pos, bars, tip)
     assert result["status"] == "closed_time"
     assert result["sell_trigger_price"] == 10.65  # last real bar's close (bar 2), not bar 3's
+
+
+def test_check_pending_ignores_entry_after_window():
+    """ALGM shape: bars from a later tip's fetch touch the zone months
+    after this tip's entry window closed -- that's expired_unfilled, not an
+    entry."""
+    tip = _tip(holding_period_low=1)
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 11.0, 11.1, 10.9, 11.0),
+        _bar(2, date(2026, 1, 6), "09:30:00", 11.2, 11.3, 11.1, 11.2),
+        _bar(3, date(2026, 4, 1), "09:30:00", 10.3, 10.4, 10.2, 10.3),  # in zone, too late
+    ])
+    assert _check_pending(_pos(), bars, tip)["status"] == "expired_unfilled"
+
+
+def test_check_pending_ignores_stop_breach_after_window():
+    tip = _tip(holding_period_low=1)
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 11.0, 11.1, 10.9, 11.0),
+        _bar(2, date(2026, 1, 6), "09:30:00", 11.2, 11.3, 11.1, 11.2),
+        _bar(3, date(2026, 1, 7), "09:30:00", 8.8, 8.9, 8.5, 8.6),  # below stop, day 2
+    ])
+    assert _check_pending(_pos(), bars, tip)["status"] == "expired_unfilled"
+
+
+def test_check_open_ignores_target_after_deadline():
+    """TSLA shape: with more data in the table than the holding period,
+    a target hit after the deadline must not count, and the time exit is
+    the deadline day's close, not the newest bar's."""
+    tip = _tip(holding_period_high=1)
+    pos = _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,
+               buy_price=10.5, risk_per_share=1.5)
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 10.5, 10.6, 10.4, 10.5),
+        _bar(2, date(2026, 1, 6), "15:55:00", 10.6, 10.8, 10.5, 10.7),
+        _bar(3, date(2026, 1, 7), "09:30:00", 11.9, 12.5, 11.8, 12.4),  # target, too late
+        _bar(4, date(2026, 1, 30), "15:55:00", 13.0, 13.1, 12.9, 13.0),
+    ])
+    result = _check_open(pos, bars, tip)
+    assert result["status"] == "closed_time"
+    assert result["sell_timestamp"] == 2
+    assert result["sell_trigger_price"] == 10.7
 
 
 # --- _advance_position chaining -----------------------------------------
@@ -774,4 +850,5 @@ def test_update_outcomes_migration_tags_preexisting_resolved_rows_as_5m(tmp_path
             "SELECT fill_granularity FROM outcomes WHERE code = 'OLD.US'"
         ).fetchone()[0]
     assert "fill_granularity" in cols
+    assert "same_bar" in cols
     assert granularity == "5m"

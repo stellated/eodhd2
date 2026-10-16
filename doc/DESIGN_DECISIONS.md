@@ -1489,6 +1489,51 @@ the stale-ticker check is clean. The corrected count also flags 42 tips
 from 2026-08-05..19 with partial `intraday_5m` windows (6-20 days),
 which the row count had hidden.
 
+### outcomes triggers are bounded to the tip's own windows; same_bar (2026-10-16)
+**Problem 1, same-bar entry and stop:** `_check_pending()` checked each bar
+for a stop breach before the entry zone, so a bar that touched both was
+always `aborted` (0R). That's the optimistic reading, the opposite of the
+"assume the worst" rule used for target/stop collisions, and plainly wrong
+when the bar opened inside the zone (the entry is certain). Only WS.US
+2026-08-05 was affected.
+
+**Decision:** a bar reaching both the zone and the stop is an entry,
+stopped out on the same bar, unless it opened at/below the stop (the setup
+broke before any trade: still `aborted`). Every same-bar case is recorded
+in a new `same_bar` column (`entry_target`, `entry_stop`,
+`entry_target_stop`, `target_stop`) rather than only logged, so analysis
+can exclude or test them.
+
+**Problem 2, unbounded scans (found while replaying every row to fill
+`same_bar`):** neither checker limited itself to the tip's windows.
+`_check_pending()` looked for an entry in every bar the table held for the
+ticker, so bars fetched for a *later* tip of the same ticker could
+"enter" a tip months after its entry window (ALGM 2026-04-17,
+`holding_period_low=2`, entered 2026-07-30). `_check_open()` checked
+target/stop on every bar after the buy, and the time exit sold at the
+newest bar in the table rather than at the deadline (TSLA 2026-09-09,
+`holding_period_high=7`: should sell 09-18, sold 10-07). So a stored
+result depended on what else happened to be in the table when it was
+computed. The backfilled tips, fetched with their full 20-day window in
+one go, were hit hardest.
+
+**Decision:** `_window_bars()` restricts trigger scans to days
+0..`holding_period_low` (entry, from tip_date) and 0..`holding_period_high`
+(exit, from buy_date), which is what those fields were always documented
+to mean. The time exit is the deadline day's last real close.
+
+**Rebuild:** the whole table was rebuilt from scratch (DELETE, then
+`update_outcomes()`), after recording EODHD's no-intraday confirmation for
+the 4 closed-end funds so their daily-bar rows came back. 677 of 3,213 rows
+changed, mostly positions previously held past their deadline
+(closed_stop -> closed_time 243, closed_target -> closed_time 116) and
+entries previously taken after the window (now `expired_unfilled`).
+Closed trades: 2,583 -> 2,494, total R -300.7 -> -192.6, mean R -0.116 ->
+-0.077. A second `update_outcomes()` call changes nothing.
+
+`doc/OUTCOMES_SCHEMA.md` (new) documents the table for the analysis
+project.
+
 ---
 
 ## tips_io design

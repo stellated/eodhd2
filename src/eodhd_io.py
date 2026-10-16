@@ -1336,6 +1336,14 @@ CREATE TABLE IF NOT EXISTS {tablename} (
     -- constrain; the two values above are the only ones ever written.
     fill_granularity TEXT,
 
+    -- Which trigger levels the exit bar touched, when one 5-minute (or
+    -- daily) bar covered more than one and the order within the bar is
+    -- unknowable: 'entry_target', 'entry_stop', 'entry_target_stop' (exit
+    -- on the entry bar) or 'target_stop' (a later bar). Wherever the stop
+    -- is involved the stop is assumed to have hit. NULL otherwise, and on
+    -- every non-closed row. Added via ALTER TABLE, so no CHECK either.
+    same_bar TEXT,
+
     PRIMARY KEY (code, tip_date)
 );
 """
@@ -1412,6 +1420,17 @@ def _time_exit_due(pos: dict, tip: dict, bars: pl.DataFrame) -> bool:
     return len(_trading_days_seen(bars, pos["buy_date"])) > tip["holding_period_high"] + 1
 
 
+def _window_bars(bars: pl.DataFrame, start: date, n_days: int) -> pl.DataFrame:
+    """The real-volume bars on the first n_days distinct dates present in
+    `bars` on/after `start` (day 0 = `start`). Triggers may only fire
+    inside this window: the table can hold bars for the same ticker from
+    other tips' fetches far beyond it, and an unbounded scan let those
+    decide entries and exits (2026-10-16 -- see doc/DESIGN_DECISIONS.md,
+    "outcomes triggers are bounded to the tip's own windows")."""
+    days = sorted(_trading_days_seen(bars, start))[:n_days]
+    return bars.filter(pl.col("local_date").is_in(days) & (pl.col("vo") > 0))
+
+
 def _sell_fields(bar: dict, trigger_price: float, pos: dict) -> dict:
     """Common fields for any exit (target/stop/time) -- same slippage
     treatment regardless of why the exit happened."""
@@ -1444,11 +1463,18 @@ def _check_pending(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
     counts every calendar day present, real-volume or not -- that's a time
     question, not an execution one.
     """
-    for bar in bars.filter(pl.col("vo") > 0).iter_rows(named=True):
+    # Days 0..holding_period_low only -- see _entry_window_closed().
+    window = _window_bars(bars, tip["tip_date"], tip["holding_period_low"] + 1)
+    for bar in window.iter_rows(named=True):
         breached, _ = _level_crossed(bar, tip["stop"], direction="down")
-        if breached:
-            return {**pos, "status": "aborted"}
         touched, fill = _zone_touched(bar, tip["entry_zone_low"], tip["entry_zone_high"])
+        # A bar that reaches both the zone and the stop is an entry unless it
+        # opened at/below the stop (setup broken before any trade): opening
+        # inside the zone is a certain entry, and otherwise worst case is
+        # assumed -- price fell through the zone into the stop. _check_open()
+        # then stops it out on this same bar (same_bar='entry_stop').
+        if breached and (not touched or bar["op"] <= tip["stop"]):
+            return {**pos, "status": "aborted"}
         if touched:
             buy_price = _apply_slippage(fill, "buy")
             return {
@@ -1469,7 +1495,8 @@ def _check_pending(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
 def _check_open(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
     """pos currently 'open'. `bars` is every intraday_5m row for this code
     from buy_timestamp onward (inclusive) -- so same-bar entry+exit is
-    possible; logged, not prevented, to see how often it actually happens.
+    possible; allowed, logged, and recorded in same_bar (along with a
+    target+stop collision on a later bar) so analysis can segment on it.
 
     Trigger checks and the time-exit fill only ever consider vo > 0 bars --
     same "delay all trades until a bar with volume" reasoning as
@@ -1478,29 +1505,37 @@ def _check_open(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
     is deferred rather than forced onto a padded/NULL close -- stays 'open'
     and is reconsidered next call.
     """
-    real_bars = bars.filter(pl.col("vo") > 0)
+    # Days 0..holding_period_high from buy_date only -- see _time_exit_due().
+    # The time exit sells at the last real bar inside that window, i.e. the
+    # deadline day's close, not the latest bar the table happens to hold.
+    real_bars = _window_bars(bars, pos["buy_date"], tip["holding_period_high"] + 1)
     for bar in real_bars.iter_rows(named=True):
         hit_target, fill_t = _level_crossed(bar, tip["target"], direction="up")
         hit_stop, fill_s = _level_crossed(bar, tip["stop"], direction="down")
-        if hit_target and hit_stop:
-            logging.warning(
-                f"{pos['code']} {pos['tip_date']}: bar {bar['timestamp']} hit "
-                f"both target and stop -- assuming stop (worst case)."
-            )
-            hit_target = False
         if hit_target or hit_stop:
-            if bar["timestamp"] == pos["buy_timestamp"]:
+            entry_bar = bar["timestamp"] == pos["buy_timestamp"]
+            touched = (["entry"] if entry_bar else []) + \
+                (["target"] if hit_target else []) + (["stop"] if hit_stop else [])
+            same_bar = "_".join(touched) if len(touched) > 1 else None
+            if hit_target and hit_stop:
+                logging.warning(
+                    f"{pos['code']} {pos['tip_date']}: bar {bar['timestamp']} hit "
+                    f"both target and stop -- assuming stop (worst case)."
+                )
+                hit_target = False
+            if entry_bar:
                 logging.warning(
                     f"{pos['code']} {pos['tip_date']}: exit triggered on the "
                     f"same bar as entry (timestamp {bar['timestamp']})."
                 )
             sell_type = "closed_target" if hit_target else "closed_stop"
             fill = fill_t if hit_target else fill_s
-            return {**pos, "status": sell_type, **_sell_fields(bar, fill, pos)}
+            return {**pos, "status": sell_type, "same_bar": same_bar,
+                    **_sell_fields(bar, fill, pos)}
     if _time_exit_due(pos, tip, bars) and not real_bars.is_empty():
         last_bar = real_bars.row(-1, named=True)
         return {
-            **pos, "status": "closed_time",
+            **pos, "status": "closed_time", "same_bar": None,
             **_sell_fields(last_bar, last_bar["cl"], pos),
         }
     return pos
@@ -1778,6 +1813,12 @@ def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
             f"UPDATE {tablename} SET fill_granularity = '5m' "  # noqa: S608
             f"WHERE fill_granularity IS NULL AND status NOT IN ('pending', 'open')"
         )
+        db.conn.commit()
+    if "same_bar" not in existing_cols:
+        # Rows closed before this column existed stay NULL here; they can't
+        # be told apart from "no same-bar event" without replaying their
+        # bars (done once for production by hand, 2026-10-16).
+        db.conn.execute(f"ALTER TABLE {tablename} ADD COLUMN same_bar TEXT")
         db.conn.commit()
     _reopen_daily_resolved_with_intraday(db, tablename)
     _seed_new_outcomes(db, tablename)

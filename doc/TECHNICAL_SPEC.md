@@ -251,13 +251,24 @@ design") for the full rationale behind every column and the status enum.
   `fill_granularity='1d'` row whose ticker now has `intraday_5m` bars
   on/after its tip_date, so it's reseeded `pending` and redone at 5m --
   terminal rows are otherwise never revisited.
-- `pending` -> `aborted` (stop breached before ever entering) /
-  `open` (entry zone touched) / `expired_unfilled` (window closed,
-  neither happened) / stays `pending` (window still open).
+- Triggers only fire inside the tip's own windows (`_window_bars()`):
+  entry/abort on days 0..`holding_period_low` from tip_date, target/stop on
+  days 0..`holding_period_high` from buy_date. The price table holds bars
+  for the same ticker well beyond these (other tips' fetches), and before
+  2026-10-16 the scans were unbounded -- see `doc/DESIGN_DECISIONS.md`,
+  "outcomes triggers are bounded to the tip's own windows".
+- `pending` -> `aborted` (stop breached before ever entering, by a bar
+  that didn't also reach the zone or that opened at/below the stop) /
+  `open` (entry zone touched -- including a bar that also reached the
+  stop, which then stops out on that bar) / `expired_unfilled` (window
+  closed, neither happened) / stays `pending` (window still open).
 - `open` -> `closed_target` / `closed_stop` (same-bar collision: assumes
-  `closed_stop`, logs a warning) / `closed_time` (last available *real*
-  bar's close; deferred, stays `open`, if no real bar has arrived since
-  buy at all) / stays `open`.
+  `closed_stop`, logs a warning) / `closed_time` (the deadline day's last
+  *real* bar's close) / stays `open`.
+- `same_bar` records which levels the exit bar touched when one bar
+  covered more than one (`entry_target`, `entry_stop`, `entry_target_stop`,
+  `target_stop`), else NULL. Full column-by-column semantics for analysis
+  are in `doc/OUTCOMES_SCHEMA.md`.
 - Fill prices: `_level_crossed()`/`_zone_touched()` fill at the crossed
   level/boundary, or the bar's open if the bar gapped past it (gap
   direction is realistic, not symmetric -- see `doc/DESIGN_DECISIONS.md`).
