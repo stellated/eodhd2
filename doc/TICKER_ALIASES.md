@@ -11,8 +11,8 @@ cutover, why volume isn't rescaled), see `doc/DESIGN_DECISIONS.md`,
 The first five were researched in detail in
 `doc/DELISTING_RESEARCH_2026-09-30.md`.
 
-Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (16 as of
-2026-10-15).
+Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (17 as of
+2026-10-18).
 
 ## Renames (new_code, ratio 1.0)
 
@@ -25,6 +25,7 @@ Same listed security under a new symbol; one continuous price series.
 | NISN.US | AIOS.US | 2026-02-12 | 2026-10-12 | 2026-09-21 | Ticker-only rename to AIOS Tech Inc. (GlobeNewswire/Finviz). |
 | BLBX.US | ALOY.US | 2026-02-25 | 2026-10-14 | 2026-08-13 | Blackboxstocks Inc. renamed REalloys Inc. The newsletter still tipped it as BLBX six months later; the tip's entry_zone_low (12.54) equals ALOY's 2026-08-12 close exactly, so it was charting ALOY under the stale symbol. EODHD serves nothing for BLBX.US, hence effective from the rename date. |
 | GMGI.US | MRDN.US | 2026-05-05 | 2026-09-30 | 2026-08-21, 2026-08-27 | 1-for-12 reverse split + rename to Meridian Holdings, real date 2026-03-03; EODHD kept serving split-adjusted GMGI.US through 2026-05-04, so cutover is 05-05. 2026-05-04 close 12.85 identical on both. |
+| SBLX.US | FABC.US | 2026-04-29 | 2026-10-18 | 2026-05-26 | StableX Technologies ticker change (aggregator gives 2026-04-29; not confirmed elsewhere). From 04-29 EODHD's SBLX 5m rows have no trades (vo=0, flat at the 04-28 close) while FABC 5m starts that day; SBLX daily kept going to 07-10 and matches FABC to 2dp rounding (05-26 5.87/6.04/5.15/5.43 on both). Outcome on the real bars: `aborted` (09:30 bar hit the 5.76 stop before the zone was reached at 10:05). |
 | CUK.US | CCL.US | 2026-05-07 | 2026-10-14 | 2026-04-17 | Carnival DLC unification: Carnival plc (CUK) merged 1-for-1 into Carnival Corporation Ltd (CCL); CUK suspended before open 2026-05-07. The two tracked near-identically while dual-listed. |
 | EXPI.US | AGNT.US | 2026-05-08 | 2026-10-14 | 2026-04-21 | eXp World Holdings rebranded AGNT Inc (Delaware → Texas). EODHD's EXPI.US and AGNT.US rows byte-identical through 2026-05-07. |
 | XWIN.US | XMAX.US | 2026-05-18 | 2026-10-12 | 2026-09-25, 2026-10-01 | Ticker-only rename to XMax Inc. (formerly Nova Lifestyle) (GlobeNewswire). |
@@ -75,3 +76,7 @@ They'll keep appearing in the nightly log's `daily` line; that's expected.
   whether it's the same listed security. Compare the tip's own price levels
   (entry zone, target, stop) with the candidate successor's prices around
   the tip date (BLBX).
+- EODHD can go on serving a renamed ticker's *daily* bars while its *intraday*
+  bars under the old symbol are empty (SBLX: daily to 07-10, 5m empty from
+  04-29). Set `effective_date` from whichever feed stops first, and check the
+  5m bars for vo=0 runs, not just whether rows exist.
