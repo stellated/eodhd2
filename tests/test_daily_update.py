@@ -5,6 +5,7 @@ import pytest
 
 from scripts.daily_update import (
     _all_tips,
+    _log_dead_intraday,
     _log_stale_tickers,
     _log_unresolved_tips,
     _still_open_tips,
@@ -235,6 +236,81 @@ def test_log_stale_tickers_missing_tables_is_silent(tmp_path, caplog):
     with Database(tmp_path / "test.db") as db:
         with caplog.at_level("INFO"):
             _log_stale_tickers(db)
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+_OPEN_TS = 1779370200  # a 13:30 UTC market open; days below are offsets from it
+
+
+def _seed_dead_intraday_db(
+    db: Database, tips: list[tuple[str, str]],
+    days: list[tuple[str, str, int, list[int]]],
+) -> None:
+    """days: (code, date, daily vo, 5m bar volumes for that day)."""
+    db.conn.execute("CREATE TABLE tip_details (tip_date TEXT, code TEXT)")
+    db.conn.executemany("INSERT INTO tip_details VALUES (?, ?)",
+                        [(d, c) for c, d in tips])
+    db.conn.execute("CREATE TABLE daily (code TEXT, date TEXT, timestamp INTEGER, vo INTEGER)")
+    db.conn.execute("CREATE TABLE intraday_5m (code TEXT, timestamp INTEGER, vo INTEGER)")
+    for n, (code, day, daily_vo, bar_vols) in enumerate(days):
+        ts = _OPEN_TS + n * 86400
+        db.conn.execute("INSERT INTO daily VALUES (?, ?, ?, ?)", (code, day, ts, daily_vo))
+        db.conn.executemany("INSERT INTO intraday_5m VALUES (?, ?, ?)",
+                            [(code, ts + i * 300, v) for i, v in enumerate(bar_vols)])
+
+
+def test_log_dead_intraday_flags_empty_5m_days_when_daily_traded(tmp_path, caplog):
+    """SBLX/RVYL shape: after a rename EODHD keeps serving the old symbol's
+    daily bars, but its 5m bars are all zero volume."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_dead_intraday_db(
+            db, [("OLD.US", "2026-05-20"), ("OK.US", "2026-05-20")],
+            [("OLD.US", "2026-05-21", 46000, [500, 700]),
+             ("OLD.US", "2026-05-22", 101700, [0, 0]),
+             ("OLD.US", "2026-05-26", 32200, [0, 0]),
+             ("OK.US", "2026-05-22", 90000, [0, 400])],  # one real bar is enough
+        )
+        with caplog.at_level("INFO"):
+            _log_dead_intraday(db)
+
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "OLD.US (2d, 2026-05-22..2026-05-26, tips 2026-05-20)" in warnings[0]
+    assert "OK.US" not in warnings[0]
+
+
+def test_log_dead_intraday_ignores_thin_tickers_and_days_outside_windows(tmp_path, caplog):
+    with Database(tmp_path / "test.db") as db:
+        _seed_dead_intraday_db(
+            db, [("THIN.US", "2026-05-20"), ("LATER.US", "2026-05-20")],
+            [("THIN.US", "2026-05-22", 600, [0, 0]),          # MKDW/RDAC: barely trades
+             ("LATER.US", "2026-08-20", 50000, [0, 0]),       # past the tip's window
+             ("NOTIP.US", "2026-05-22", 50000, [0, 0])],      # no tip at all
+        )
+        with caplog.at_level("INFO"):
+            _log_dead_intraday(db)
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("no dead intraday_5m days" in r.message for r in caplog.records)
+
+
+def test_log_dead_intraday_ignores_days_with_no_5m_rows(tmp_path, caplog):
+    """A day missing from intraday_5m entirely is a coverage gap, which
+    _log_unresolved_tips() reports -- not this check's job."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_dead_intraday_db(db, [("GAP.US", "2026-05-20")],
+                               [("GAP.US", "2026-05-22", 50000, [])])
+        with caplog.at_level("INFO"):
+            _log_dead_intraday(db)
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_log_dead_intraday_missing_tables_is_silent(tmp_path, caplog):
+    with Database(tmp_path / "test.db") as db:
+        with caplog.at_level("INFO"):
+            _log_dead_intraday(db)
 
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 

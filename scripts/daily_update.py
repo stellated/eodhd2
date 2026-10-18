@@ -24,6 +24,8 @@ is needed -- see _log_unresolved_tips() and doc/DESIGN_DECISIONS.md
 It also logs tips whose symbol had no daily bars at all just before
 tip_date -- the newsletter tipping a stock under an old ticker -- a week
 after the tip rather than once its window closes; see _log_stale_tickers().
+And it logs days where a tipped symbol's 5m bars have no volume while its
+daily bar traded -- the other way a rename shows up; see _log_dead_intraday().
 
 intraday-price runs also call update_outcomes() after the price fetch --
 the outcomes table's entry/exit trigger logic is entirely 5-minute-bar
@@ -258,6 +260,69 @@ def _log_stale_tickers(db: Database, today: date | None = None) -> None:
     )
 
 
+# A day of 5m bars with no volume at all only counts as "dead" when the
+# daily bar shows real trading -- thin tickers (MKDW, RDAC: a few hundred
+# shares a day) legitimately have whole days of empty 5m bars.
+DEAD_INTRADAY_MIN_DAILY_VO = 5000
+_SESSION_SECONDS = 6 * 3600 + 30 * 60
+
+
+def _log_dead_intraday(db: Database) -> None:
+    """Surface days, inside any tip's window, where intraday_5m has bars but
+    none with volume while the daily bar traded at least
+    DEAD_INTRADAY_MIN_DAILY_VO shares. That's what a rename looks like at
+    EODHD: it keeps serving the old symbol's daily bars for weeks while its
+    5m bars go empty (SBLX->FABC, RVYL->RTB), so neither
+    _log_unresolved_tips() (it counts days present, empty or not) nor
+    _log_stale_tickers() (daily only) catches it. Bars with no volume never
+    trigger an outcome, so a tip on such days resolves wrongly or not at
+    all. Fixed by an alias plus a re-fetch, after which the days have real
+    volume and drop out of this check on their own.
+    """
+    tables = (TIPS_TABLENAME, PRICE_TABLENAME, INTRADAY_TABLENAME)
+    if not all(db._table_exists(t) for t in tables):
+        return
+    rows = db.conn.execute(
+        f"""
+        SELECT d.code, d.date, GROUP_CONCAT(DISTINCT t.tip_date)
+        FROM {PRICE_TABLENAME} d
+        JOIN (SELECT DISTINCT code, tip_date FROM {TIPS_TABLENAME}) t
+          ON t.code = d.code
+         AND d.date BETWEEN t.tip_date AND date(t.tip_date, ?)
+        WHERE d.vo >= ?
+          AND EXISTS (SELECT 1 FROM {INTRADAY_TABLENAME} i WHERE i.code = d.code
+                      AND i.timestamp >= d.timestamp AND i.timestamp < d.timestamp + ?)
+          AND NOT EXISTS (SELECT 1 FROM {INTRADAY_TABLENAME} i WHERE i.code = d.code
+                          AND i.timestamp >= d.timestamp AND i.timestamp < d.timestamp + ?
+                          AND i.vo > 0)
+        GROUP BY d.code, d.date
+        ORDER BY d.code, d.date
+        """,  # noqa: S608
+        (f"+{DEFAULT_N2 * 2 + 5} days", DEAD_INTRADAY_MIN_DAILY_VO,
+         _SESSION_SECONDS, _SESSION_SECONDS),
+    ).fetchall()
+    if not rows:
+        log.info("no dead %s days in tip windows", INTRADAY_TABLENAME)
+        return
+    by_code: dict[str, list] = {}
+    for code, day, tip_dates in rows:
+        by_code.setdefault(code, []).append((day, tip_dates.split(",")))
+    log.warning(
+        "%d ticker(s) with %s days that have no volume while %s traded -- likely "
+        "renamed (EODHD's 5m feed for the old symbol goes empty first); find the "
+        "new symbol, add a ticker_aliases entry and re-fetch (see "
+        "doc/TICKER_ALIASES.md): %s",
+        len(by_code),
+        INTRADAY_TABLENAME,
+        PRICE_TABLENAME,
+        "; ".join(
+            f"{code} ({len(days)}d, {days[0][0]}..{days[-1][0]}, tips "
+            f"{','.join(sorted({t for _, ts in days for t in ts}))})"
+            for code, days in by_code.items()
+        ),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db-path", required=True, type=Path)
@@ -389,6 +454,7 @@ def main() -> None:
 
         _log_unresolved_tips(db)
         _log_stale_tickers(db)
+        _log_dead_intraday(db)
 
 
 if __name__ == "__main__":

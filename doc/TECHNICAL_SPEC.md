@@ -596,6 +596,13 @@ Each run:
    (BLBX, ELWS) -- caught a week after the tip rather than once the window
    closes. The entry zone is logged to compare against candidate
    successors' closes. Runs every mode, like step 5.
+7. Calls `_log_dead_intraday(db)`: warns about any ticker with days inside
+   a tip's window (`tip_date` .. `+n2*2+5`) where `intraday_5m` has bars but
+   none with volume while the `daily` bar traded at least
+   `DEAD_INTRADAY_MIN_DAILY_VO` (5000) shares. After a rename EODHD keeps
+   serving the old symbol's daily bars for weeks while its 5m bars go empty
+   (SBLX, RVYL), which steps 5 and 6 can't see. One line per ticker: day
+   count, first..last day, tip dates. Runs every mode; ~9s on production.
 
 This backfill step exists because the newsletter arrives before US market
 open: the first time a brand-new tip is seen, `tips()` can only fetch the n1

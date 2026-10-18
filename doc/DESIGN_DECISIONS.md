@@ -1534,6 +1534,39 @@ Closed trades: 2,583 -> 2,494, total R -300.7 -> -192.6, mean R -0.116 ->
 `doc/OUTCOMES_SCHEMA.md` (new) documents the table for the analysis
 project.
 
+
+### Dead intraday days: the third rename signal (2026-10-18)
+**Problem:** SBLX.US (tipped 2026-05-26, renamed FABC 2026-04-29) was only
+caught because its backfilled window happened to be short. EODHD kept
+serving SBLX *daily* bars until 07-10, but from the rename date its *5m*
+rows had no trades (vo=0, prices filled forward from the 04-28 close). So
+the `daily` checks were clean, and `unresolved_tips()` counts days that are
+present, empty or not. A one-off scan of production for 5m days with no
+volume while the daily bar traded found one more: RVYL.US -> RTB.US
+(2026-05-13), whose tip had closed before the rename, so its outcome was
+fine. Bars with no volume never trigger an outcome, so a tip on such days
+resolves wrongly or stays unresolved. SBLX's first, pre-alias result was
+`expired_unfilled` from those empty bars; on FABC's real bars it's
+`aborted`.
+
+**Decision:** `_log_dead_intraday()` in `daily_update.py`, run every mode
+after the other two checks. It flags days inside a tip's window where
+`intraday_5m` has bars, none with volume, and the `daily` bar traded at
+least `DEAD_INTRADAY_MIN_DAILY_VO` (5000) shares. The threshold is there
+because genuinely thin tickers (MKDW, RDAC: a few hundred shares a day)
+have whole empty 5m days legitimately; both renames had 9,600+ shares on
+every dead day. Days with no 5m rows at all are left to
+`unresolved_tips()`. Days with some 5m volume but far less than daily (2-5%
+on a busy day, seen on FGNX/AKTX/PBT/AEHL) aren't flagged: their bars are
+real, it's a volume-reporting mismatch. No alias exclusion is needed: once
+an alias is added and the window re-fetched, the days have real volume
+and drop out on their own; if the re-fetch is forgotten, the check keeps
+reminding.
+
+**Lesson recorded in `doc/TICKER_ALIASES.md`:** set an alias's
+`effective_date` from whichever feed stops first; for SBLX that was the 5m
+feed, nearly three months before daily.
+
 ---
 
 ## tips_io design
