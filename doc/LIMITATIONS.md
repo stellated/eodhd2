@@ -48,3 +48,23 @@
   colour parsed from the HTML — a signal (not a guarantee) that the
   newsletter's rendering has changed in a way that would invalidate this
   estimate.
+
+## 6. EODHD 5m volume disagrees with daily volume
+- Prices in `intraday_5m` match `daily` (5m highs/lows equal the daily
+  high/low), but volume often doesn't. Measured 2026-10-18 over 97,276
+  ticker-days, as the sum of a day's regular-hours 5m volume over daily
+  volume: median 0.85 (expected, since daily also counts extended hours and
+  auctions), but 3,860 days are above 1.25x (up to 37x) and 2,157 below 0.5x.
+- **Too high:** mostly whole dates where 10-38% of tickers are inflated at
+  once: 2026-03-16..19, 04-30..05-11, 08-19..28, 10-13..15 (TSLA 05-08:
+  368M in 5m bars vs 65M daily). EODHD's live API returns the same numbers,
+  so re-fetching doesn't help.
+- **Steady factor per ticker:** some tickers run at a constant ratio for
+  weeks or months (COIA 2.00x until 2026-05-27 then 1.00x; IESC ~0.46x;
+  CRWD ~0.22x; APH ~0.40x in July-August) with every bar trading, so the
+  two feeds count volume differently rather than 5m data being missing.
+- **Effect:** nothing in the pipeline uses 5m volume as a quantity -- only
+  `vo > 0` ("did this bar trade"), which this doesn't affect. But
+  `outcomes.buy_bar_volume`/`sell_bar_volume` inherit the problem; use
+  `daily.vo` for any liquidity or slippage work (see
+  `doc/OUTCOMES_SCHEMA.md`).

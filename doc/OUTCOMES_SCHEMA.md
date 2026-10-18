@@ -39,12 +39,12 @@ Everything is simulated from 5-minute bars (`intraday_5m`).
 | `buy_local_time` | TEXT `HH:MM:SS` | New York time of the entry bar's start (`09:30:00` = first bar). |
 | `buy_trigger_price` | REAL | Price the entry rule filled at, before slippage. |
 | `buy_price` | REAL | `buy_trigger_price` plus slippage (what the trade paid). |
-| `buy_bar_volume` | INTEGER | Volume of the entry bar, kept for liquidity/slippage studies. |
+| `buy_bar_volume` | INTEGER | Volume of the entry bar, as EODHD's 5m feed reports it. Unreliable as a quantity; see "5m volume" below. |
 | `risk_per_share` | REAL | `buy_price - stop`: the planned loss per share. Positive. |
 | `sell_date`, `sell_timestamp`, `sell_local_time` | | As for buy, for the exit bar. NULL unless `closed_*`. |
 | `sell_trigger_price` | REAL | Price the exit rule filled at, before slippage. |
 | `sell_price` | REAL | `sell_trigger_price` minus slippage. |
-| `sell_bar_volume` | INTEGER | Volume of the exit bar. |
+| `sell_bar_volume` | INTEGER | Volume of the exit bar. Same caveat as `buy_bar_volume`. |
 | `profit_per_share` | REAL | `sell_price - buy_price`. |
 | `r_multiple` | REAL | `profit_per_share / risk_per_share`. A full stop-out is about -1.0 (a bit worse after slippage, much worse after a gap through the stop); +1.0 is a gain equal to the planned risk. |
 | `fill_granularity` | TEXT | `5m` (normal) or `1d`; see "Daily-bar fallback". NULL only on not-yet-checked `pending` rows. |
@@ -143,6 +143,19 @@ them or analyse them separately. As of 2026-10-16 there are 4 (EMF, CHY,
 AWP, JRS, all April 2026).
 
 ## Things the analysis should know
+
+- **5m volume is only good for "did this bar trade".** Checked 2026-10-18
+  against `daily` over 97,276 ticker-days: on a normal day a day's 5m bars
+  sum to about 85% of daily volume (the 5m bars cover regular hours only).
+  But EODHD's 5m volume is sometimes several times too high on whole dates
+  across many tickers at once (e.g. TSLA 2026-05-08: 368M in 5m bars vs 65M
+  daily; worst dates 03-16..19, 04-30..05-11, 08-19..28, 10-13..15), and
+  some tickers are off by a steady factor for weeks (COIA 2.0x, CRWD 0.22x,
+  IESC 0.46x). Prices are unaffected, and so are the outcomes, which only
+  use volume to skip bars with none. 255 of 3,172 entered trades have a buy
+  or sell bar on an inflated day. For liquidity or volume-based slippage,
+  use `daily.vo` (e.g. relative to the ticker's own trailing average), not
+  `buy_bar_volume`/`sell_bar_volume` or summed 5m volume.
 
 - **Coverage:** tips from 2026-04-08 onward. The historical backfill fills
   in 2026-05-20..2026-08-04 by about 2026-10-26; until then that range has
