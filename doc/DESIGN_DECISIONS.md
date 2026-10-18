@@ -1721,6 +1721,135 @@ Revisit if a future need for the newsletter's own literal ratio arises.
 
 ---
 
+## Additional data sources
+
+### Next Day Movers: fetch and wrangle here, analyse elsewhere (2026-10-18, proposed)
+**Status:** agreed direction, nothing built yet. Ian may start in about a
+month.
+
+**Context:** Ian is considering evaluating alphanume's "Next Day Movers"
+dataset (https://www.alphanume.com/guides/next-day-movers-guide): first
+"buy at open, sell at close" on each day's picks, then an opening range
+breakout (ORB) on the same stocks, both on 5m bars. Per the guide, picks are
+published at 3:30 PM ET for the *next* session through a REST API
+(`api.alphanume.com/v1/next-day-movers`, API key). Each record is `date`,
+`ticker`, and the realised `return`/`absolute_move` (NULL until the next
+session closes). The universe is liquid, optionable US equities. The signal
+is non-directional: it predicts the size of the move, not its direction.
+History is described as point-in-time and never revised. Picks per day and
+how far back the history goes aren't stated.
+
+The question was whether to set up a separate project (and Claude session)
+to download and test this, or to do all fetching and wrangling in this
+project and hand data to separate analysis projects.
+
+**Decision:** consolidate fetching and wrangling here. Strategy testing
+goes to separate analysis projects, which work from dated, read-only copies
+of the db plus a schema doc (the same pattern as `doc/OUTCOMES_SCHEMA.md`).
+- The picks get their own table (working name `ndm_picks`), alongside
+  `tip_details`.
+- Their prices go into the existing `daily`/`intraday_5m` tables, so a
+  ticker that both sources pick is fetched once.
+- The nightly checks (`_log_unresolved_tips()`, `_log_stale_tickers()`,
+  `_log_dead_intraday()`) are extended to the new source.
+- Strategy simulation (buy-open/sell-close, ORB) is *not* built here.
+  `outcomes` lives in this project only because it's tied to the
+  newsletter's own entry zone, target and stop. Strategies that are meant
+  to be iterated on belong in the analysis project. Without this line this
+  project slowly becomes the analysis project too.
+
+**Why consolidate:**
+- **The EODHD learning curve is already paid for.** A new project would
+  meet again, one at a time:
+  - renamed tickers that EODHD silently stops serving (17 aliases so far;
+    the 5m feed goes empty before daily);
+  - bars with no volume;
+  - tickers EODHD has no intraday data for;
+  - unreliable 5m volume (`doc/LIMITATIONS.md` §6);
+  - windows that were never fully fetched;
+  - the remote-overwrite race `safe_push()` guards against.
+- **One EODHD key means one daily quota** (1,200 calls). Two projects
+  fetching on their own schedules would compete for it with neither aware
+  of the other; one scheduler can share it out, e.g. between the tips and
+  the movers backfills.
+- **One writer to `sda.db`.** The sync model assumes a single writer
+  (`ops/lib_rclone_sync.sh`). A second project writing the same file would
+  bring back the race described in "Manual recovery incident" above.
+- **Shared price data.** Movers are liquid, optionable names, and the
+  newsletter often tips the same ones (TSLA, NVDA, PLTR, MU are already in
+  `intraday_5m`). A fix such as an alias benefits both sources.
+- **Cleaner analysis projects.** They only ever see a read-only copy and a
+  schema doc, never the fetching mess.
+
+**Costs and risks accepted:**
+- **Size and sync time.** `sda.db` is 991 MB (2026-10-18), and every run
+  pulls and pushes the whole file (Sunday 2026-10-18's pull took about 16
+  minutes); the weekly snapshots copy it too. Movers add 5m bars for every
+  pick every trading day. If size or sync time becomes a problem, move
+  `intraday_5m` into its own db file and `ATTACH` it, which is mostly
+  invisible to queries. Deferred until needed.
+- **Bigger blast radius.** A bug in movers ingestion that writes bad rows
+  into the shared `daily`/`intraday_5m` tables (`INSERT OR REPLACE`) would
+  also damage the tips data, and the reverse. The weekly snapshots and the
+  nightly checks reduce the risk, but don't remove it.
+- **Different window shape.** `tips()` assumes a tip day at day 0 with
+  `n1`/`n2` trading days either side. Movers mainly need the *next*
+  session's 5m bars, plus a short history before it (e.g. for an opening
+  range or ATR). `tips()`'s parameters may cover it, but the anchor date
+  (pick date vs. trade date) needs designing, not just reusing.
+- **New ingestion code.** A REST API rather than IMAP email, with its own
+  failures: auth, rate limits, the realised `return` filled in a day late.
+- **More context for each session.** The movers source gets its own doc
+  rather than growing the existing ones further.
+
+**Alternatives considered:**
+- **Separate project with its own fetching and db:** repeats the learning
+  curve, splits the EODHD quota between uncoordinated schedulers, and
+  duplicates overlapping price data. Rejected.
+- **Shared library code, separate db per source:** reuses the code, but
+  still duplicates price data, still needs one scheduler for the quota, and
+  every fix (aliases especially) has to be applied twice. Rejected for now.
+  Splitting off only `intraday_5m` (above) is the version of this worth
+  keeping open.
+
+**MCP server:** alphanume also offers a hosted MCP server
+(`https://mcp.alphanume.com/mcp` with OAuth; `/key/mcp` with an `X-API-Key`
+header for clients without a browser). It's useful in analysis sessions for
+exploring: checking a schema, looking at other datasets, one-off questions.
+It isn't a stored source: a query returns whatever the API serves today, so
+a backtest built on it can't be rerun against the same data, and the
+picks still have to be joined to EODHD's 5m bars, which alphanume doesn't
+supply. The picks a backtest uses come from `ndm_picks`, ingested here.
+
+**Access and cost (checked 2026-10-18; re-check before subscribing):**
+- No free tier or trial. Pro is $349/month or $1,999/year; Enterprise is
+  custom. REST and MCP access both need Pro or Enterprise. (A Medium post
+  by alphanume's founder describes a free tier with a rolling 30-day delayed
+  window; it has since been withdrawn.)
+- Pro rate limit is 600 requests/minute, shared between REST and MCP; HTTP
+  429 when exceeded.
+- Most recent date's `return`/`absolute_move` are NULL until the next
+  session closes, then filled in automatically.
+
+**Build first, then subscribe for a short period.** With no free way to
+scope the data, and Pro opening the full history, the ingestion and the
+`ndm_picks` table should be built and tested (against the sample response
+in the guide) *before* paying. Then, within one paid month:
+- pull the full history;
+- also capture each day's picks live, as published at 3:30 PM ET;
+- compare the live captures with the history pulled for those dates,
+  which tests the "never revised" claim before a backtest relies on it;
+- fetch the EODHD 5m windows for the picks.
+That check is a data-side job, so it belongs here. Whether to keep
+subscribing is then an analysis-project decision.
+
+**Still unknown (the docs don't say):**
+- picks per day, and how far back the history goes (these set the EODHD
+  call budget and the db growth rate);
+- whether the endpoint paginates, and how.
+
+---
+
 ## v2.0 deferred features
 
 These were discussed and explicitly deferred:
