@@ -11,7 +11,7 @@ cutover, why volume isn't rescaled), see `doc/DESIGN_DECISIONS.md`,
 The first five were researched in detail in
 `doc/DELISTING_RESEARCH_2026-09-30.md`.
 
-Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (17 as of
+Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (18 as of
 2026-10-18).
 
 ## Renames (new_code, ratio 1.0)
@@ -28,6 +28,7 @@ Same listed security under a new symbol; one continuous price series.
 | SBLX.US | FABC.US | 2026-04-29 | 2026-10-18 | 2026-05-26 | StableX Technologies ticker change (aggregator gives 2026-04-29; not confirmed elsewhere). From 04-29 EODHD's SBLX 5m rows have no trades (vo=0, flat at the 04-28 close) while FABC 5m starts that day; SBLX daily kept going to 07-10 and matches FABC to 2dp rounding (05-26 5.87/6.04/5.15/5.43 on both). Outcome on the real bars: `aborted` (09:30 bar hit the 5.76 stop before the zone was reached at 10:05). |
 | CUK.US | CCL.US | 2026-05-07 | 2026-10-14 | 2026-04-17 | Carnival DLC unification: Carnival plc (CUK) merged 1-for-1 into Carnival Corporation Ltd (CCL); CUK suspended before open 2026-05-07. The two tracked near-identically while dual-listed. |
 | EXPI.US | AGNT.US | 2026-05-08 | 2026-10-14 | 2026-04-21 | eXp World Holdings rebranded AGNT Inc (Delaware → Texas). EODHD's EXPI.US and AGNT.US rows byte-identical through 2026-05-07. |
+| RVYL.US | RTB.US | 2026-05-13 | 2026-10-18 | 2026-04-22 | RYVYL Inc. merged with RTB Digital and took its name; trades as RTB from 2026-05-13, same CUSIP (8-K). EODHD's RVYL 5m rows have no volume from 05-13 while RVYL daily continued to 07-13; RTB daily identical (05-13 7.67/8.28/6.19/7.20, vol 101,700 on both). Found by a scan for zero-volume 5m days; outcome unaffected (`closed_stop` 04-23). |
 | XWIN.US | XMAX.US | 2026-05-18 | 2026-10-12 | 2026-09-25, 2026-10-01 | Ticker-only rename to XMax Inc. (formerly Nova Lifestyle) (GlobeNewswire). |
 | VSCO.US | VSXY.US | 2026-06-02 | 2026-09-30 | 2026-04-30, 2026-08-25 | Victoria's Secret & Co. voluntary ticker rebrand. 2026-06-01 close 54.30 identical on both. |
 | SATS.US | ECHO.US | 2026-06-24 | 2026-10-12 | 2026-10-06, 2026-10-13 | Ticker-only rename, EchoStar Corporation (EchoStar IR). |
@@ -78,5 +79,5 @@ They'll keep appearing in the nightly log's `daily` line; that's expected.
   the tip date (BLBX).
 - EODHD can go on serving a renamed ticker's *daily* bars while its *intraday*
   bars under the old symbol are empty (SBLX: daily to 07-10, 5m empty from
-  04-29). Set `effective_date` from whichever feed stops first, and check the
+  04-29; RVYL the same). Set `effective_date` from whichever feed stops first, and check the
   5m bars for vo=0 runs, not just whether rows exist.
