@@ -11,8 +11,8 @@ cutover, why volume isn't rescaled), see `doc/DESIGN_DECISIONS.md`,
 The first five were researched in detail in
 `doc/DELISTING_RESEARCH_2026-09-30.md`.
 
-Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (18 as of
-2026-10-18).
+Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (24 as of
+2026-10-20).
 
 ## Renames (new_code, ratio 1.0)
 
@@ -20,8 +20,11 @@ Same listed security under a new symbol; one continuous price series.
 
 | old_code | new_code | effective_date | Added | Tip dates affected | What happened / how verified |
 |---|---|---|---|---|---|
+| POAI.US | AGPU.US | 2025-12-12 | 2026-10-20 | 2026-06-19 | Predictive Oncology renamed Axe Compute Inc., Nasdaq ticker AGPU from about 2025-12-12. Tipped six months later under the old symbol; AGPU's 06-18 close 7.12 is inside the 6.86-7.16 entry zone. |
 | ELWS.US | PDC.US | 2026-01-20 | 2026-10-15 | 2026-05-15 | Earlyworks Co., Ltd. ticker change (last ELWS trade 2026-01-16). 2026-01-16 close 7.06 identical on both. Newsletter still tipped it as ELWS four months later; entry_zone_low 7.08 equals PDC's 2026-05-14 close exactly. |
+| CMPO.US | GPGI.US | 2026-01-23 | 2026-10-20 | 2026-06-24 | CompoSecure renamed GPGI, Inc. after its Husky Technologies combination; CMPO->GPGI effective 2026-01-23 (OCC/MIAX notice). Tipped under the old symbol; GPGI's 06-23 close 14.50 is inside the 14.09-14.57 entry zone. |
 | FLGC.US | ZSTK.US | 2026-01-29 | 2026-09-30 | 2026-08-27 | Flora Growth Corp. renamed ZeroStack Corp. (last FLGC trade 2026-01-28). 2026-01-28 close 8.95 identical on both symbols. |
+| DOOO.US | DOO.US | 2026-02-09 | 2026-10-20 | 2026-06-17, 2026-06-23, 2026-06-29 | BRP Inc.'s US listing. EODHD's DOOO.US daily ends 2026-02-06 and DOO.US is the same series (identical OHLC 02-02..02-06, close 77.845 vs 77.85). Tipped under the old symbol; DOO's 06-16 close 59.92 is inside the 58.45-60.22 entry zone. |
 | NISN.US | AIOS.US | 2026-02-12 | 2026-10-12 | 2026-09-21 | Ticker-only rename to AIOS Tech Inc. (GlobeNewswire/Finviz). |
 | BLBX.US | ALOY.US | 2026-02-25 | 2026-10-14 | 2026-08-13 | Blackboxstocks Inc. renamed REalloys Inc. The newsletter still tipped it as BLBX six months later; the tip's entry_zone_low (12.54) equals ALOY's 2026-08-12 close exactly, so it was charting ALOY under the stale symbol. EODHD serves nothing for BLBX.US, hence effective from the rename date. |
 | GMGI.US | MRDN.US | 2026-05-05 | 2026-09-30 | 2026-08-21, 2026-08-27 | 1-for-12 reverse split + rename to Meridian Holdings, real date 2026-03-03; EODHD kept serving split-adjusted GMGI.US through 2026-05-04, so cutover is 05-05. 2026-05-04 close 12.85 identical on both. |
@@ -31,6 +34,8 @@ Same listed security under a new symbol; one continuous price series.
 | RVYL.US | RTB.US | 2026-05-13 | 2026-10-18 | 2026-04-22 | RYVYL Inc. merged with RTB Digital and took its name; trades as RTB from 2026-05-13, same CUSIP (8-K). EODHD's RVYL 5m rows have no volume from 05-13 while RVYL daily continued to 07-13; RTB daily identical (05-13 7.67/8.28/6.19/7.20, vol 101,700 on both). Found by a scan for zero-volume 5m days; outcome unaffected (`closed_stop` 04-23). |
 | XWIN.US | XMAX.US | 2026-05-18 | 2026-10-12 | 2026-09-25, 2026-10-01 | Ticker-only rename to XMax Inc. (formerly Nova Lifestyle) (GlobeNewswire). |
 | VSCO.US | VSXY.US | 2026-06-02 | 2026-09-30 | 2026-04-30, 2026-08-25 | Victoria's Secret & Co. voluntary ticker rebrand. 2026-06-01 close 54.30 identical on both. |
+| LC.US | HAPN.US | 2026-06-22 | 2026-10-20 | 2026-06-18, 2026-06-25 | LendingClub renamed Happen, Inc. and moved NYSE->Nasdaq, LC->HAPN at the open 2026-06-22, CUSIP unchanged (8-K). EODHD's LC daily ends 06-18; HAPN's history is identical through 06-18. Before the alias the 06-18 tip read as `closed_time` on day 0 (LC's 5m bars after 06-18 have no volume); now `closed_target`. |
+| SKLZ.US | FIRY.US | 2026-06-22 | 2026-10-20 | 2026-06-19 | Skillz renamed Firy Inc., NYSE SKLZ->FIRY 2026-06-22, CUSIP unchanged. EODHD kept serving SKLZ daily to 07-17 (plus a bogus 145.00 bar on the 06-19 holiday, which never reached the db) but SKLZ's 5m bars have no volume from 06-22 -- the SBLX pattern. FIRY daily identical. Outcome `expired_unfilled` -> `closed_stop`. |
 | SATS.US | ECHO.US | 2026-06-24 | 2026-10-12 | 2026-10-06, 2026-10-13 | Ticker-only rename, EchoStar Corporation (EchoStar IR). |
 | FDP.US | DMC.US | 2026-06-27 | 2026-09-30 | 2026-08-25 | Fresh Del Monte Produce renamed Del Monte Corporation, effective 2026-06-29 (last FDP trade 06-26). 2026-06-26 close 29.22 identical on both. |
 
@@ -55,6 +60,7 @@ on why there's no intraday equivalent).
 |---|---|---|---|---|---|
 | APLS.US | 41.03 | 2026-05-14 | 2026-10-14 | 2026-04-24 | Apellis acquired by Biogen via cash tender ($41.00 + a CVR up to $4.00, excluded since it isn't priced or tradeable). Tender accepted 2026-05-14. Last real close 41.03 matches the deal price. |
 | SLNO.US | 53.01 | 2026-05-19 | 2026-10-14 | 2026-04-23 | Soleno acquired by Neurocrine Biosciences, all-cash tender ($53.00), effective 2026-05-18. Last real close 53.01 matches the deal price. |
+| NUVL.US | 124.00 | 2026-07-15 | 2026-10-20 | 2026-06-19, 2026-06-25 | Nuvalent acquired by GSK, $124.00 cash tender; merger completed and delisted 2026-07-15 (8-K). Last real trade 07-14, close 123.96; EODHD then repeats 123.96 at zero volume. Both outcomes closed by time exit before the deal and are unchanged; the alias only completes daily coverage. |
 
 ## Investigated, no alias added
 
@@ -65,6 +71,7 @@ They'll keep appearing in the nightly log's `daily` line; that's expected.
 |---|---|---|
 | HOOZ.US | 2026-08-13 | Leveraged single-stock ETF, short by 3 days (last data 2026-09-04). Not a rename/merger. Outcome resolved anyway (`aborted`). |
 | THR.US | 2026-04-28 | Short by 1 day (last data 2026-05-22). Thermon's real merger is 2026-06-01, after this tip's window, so that isn't the cause. Outcome resolved anyway (`closed_target`). |
+| MBAV.US | 2026-06-24 | Not a coverage gap: a thin SPAC (renamed Velos Acquisition I, VLOS, mid-July 2026) with two 5m days with no volume while daily traded (07-02, 07-23), so the nightly dead-5m check warns about it every run. Both days are after the trade (`closed_time` 07-01). Accepted as a standing warning (2026-10-20). |
 
 ## Lessons from the research so far
 
