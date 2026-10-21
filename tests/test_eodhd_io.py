@@ -748,17 +748,34 @@ def test_fetch_intraday_resolved_splices_renamed_ticker_with_ratio(mock_fetch_in
     assert result.iloc[1]["cl"] == pytest.approx(10.0)  # post-alias: 0.2 * 50.0
     assert result.iloc[1]["vo"] == 200  # volume NOT rescaled
 
-def test_fetch_intraday_resolved_cash_out_not_implemented(tmp_path):
-    """Cash-for-scrip has no intraday equivalent (see
-    _fetch_intraday_resolved()'s docstring) -- must fail loudly, not
-    silently produce wrong or missing data."""
+@mock.patch("src.eodhd_io.fetch_intraday")
+def test_fetch_intraday_resolved_cash_out(mock_fetch_intraday, tmp_path):
+    """A cash-for-scrip alias pads flat, zero-volume 5m bars at cash_price
+    for every bar slot of every session from effective_date on (the
+    intraday counterpart of test_fetch_daily_resolved_cash_out). Uses the
+    real XNYS calendar: 2026-01-08/09 are full sessions, 78 bars each."""
     boundary_ts = int(datetime(2026, 1, 8).timestamp())
+    mock_fetch_intraday.return_value = _intraday_row("OLD.US", boundary_ts - 500, 10.0)
     with Database(tmp_path / "test.db") as db:
         add_ticker_alias(db, "OLD.US", date(2026, 1, 8), cash_price=42.0, reason="test cash-out")
-        with pytest.raises(NotImplementedError, match="no intraday"):
-            _fetch_intraday_resolved(
-                db, "OLD.US", "tok", "5m", boundary_ts - 1000, boundary_ts + 1000
-            )
+        result = _fetch_intraday_resolved(
+            db, "OLD.US", "tok", "5m", boundary_ts - 1000, int(datetime(2026, 1, 9, 23).timestamp())
+        )
+
+    mock_fetch_intraday.assert_called_once_with(
+        "OLD.US", "tok", "5m", from_ts=boundary_ts - 1000, to_ts=boundary_ts - 1
+    )
+    assert result.iloc[0]["cl"] == 10.0  # pre-alias: real bar untouched
+    post = result.iloc[1:]
+    assert len(post) == 2 * 78
+    assert set(post["local_date"]) == {date(2026, 1, 8), date(2026, 1, 9)}
+    assert (post["code"] == "OLD.US").all()
+    assert (post[["op", "hi", "lo", "cl"]] == 42.0).all().all()
+    assert (post["vo"] == 0).all()
+    ny = pd.to_datetime(post["timestamp"], unit="s", utc=True).dt.tz_convert("America/New_York")
+    assert ny.dt.strftime("%H:%M").min() == "09:30"
+    assert ny.dt.strftime("%H:%M").max() == "15:55"
+    assert list(result.columns) == list(_intraday_row("X.US", 0, 0.0).columns)
 
 # --- Hypothesis Test ---
 # CHANGED: the @given(...) strategy below used to be attached to a

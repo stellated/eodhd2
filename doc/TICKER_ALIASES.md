@@ -11,8 +11,8 @@ cutover, why volume isn't rescaled), see `doc/DESIGN_DECISIONS.md`,
 The first five were researched in detail in
 `doc/DELISTING_RESEARCH_2026-09-30.md`.
 
-Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (24 as of
-2026-10-20).
+Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (26 as of
+2026-10-21).
 
 ## Renames (new_code, ratio 1.0)
 
@@ -27,6 +27,7 @@ Same listed security under a new symbol; one continuous price series.
 | DOOO.US | DOO.US | 2026-02-09 | 2026-10-20 | 2026-06-17, 2026-06-23, 2026-06-29 | BRP Inc.'s US listing. EODHD's DOOO.US daily ends 2026-02-06 and DOO.US is the same series (identical OHLC 02-02..02-06, close 77.845 vs 77.85). Tipped under the old symbol; DOO's 06-16 close 59.92 is inside the 58.45-60.22 entry zone. |
 | NISN.US | AIOS.US | 2026-02-12 | 2026-10-12 | 2026-09-21 | Ticker-only rename to AIOS Tech Inc. (GlobeNewswire/Finviz). |
 | BLBX.US | ALOY.US | 2026-02-25 | 2026-10-14 | 2026-08-13 | Blackboxstocks Inc. renamed REalloys Inc. The newsletter still tipped it as BLBX six months later; the tip's entry_zone_low (12.54) equals ALOY's 2026-08-12 close exactly, so it was charting ALOY under the stale symbol. EODHD serves nothing for BLBX.US, hence effective from the rename date. |
+| ETHZ.US | FRMM.US | 2026-03-02 | 2026-10-21 | 2026-07-03 | ETHZilla Corp. renamed Forum Markets, Inc., ETHZ->FRMM effective 2026-03-02 (OCC/MIAX notice). EODHD's ETHZ daily ends 02-27; FRMM identical 02-24..02-27. Tipped four months later under the old symbol; FRMM's 07-02 close 6.02 is inside the 5.80-6.05 entry zone. |
 | GMGI.US | MRDN.US | 2026-05-05 | 2026-09-30 | 2026-08-21, 2026-08-27 | 1-for-12 reverse split + rename to Meridian Holdings, real date 2026-03-03; EODHD kept serving split-adjusted GMGI.US through 2026-05-04, so cutover is 05-05. 2026-05-04 close 12.85 identical on both. |
 | SBLX.US | FABC.US | 2026-04-29 | 2026-10-18 | 2026-05-26 | StableX Technologies ticker change (aggregator gives 2026-04-29; not confirmed elsewhere). From 04-29 EODHD's SBLX 5m rows have no trades (vo=0, flat at the 04-28 close) while FABC 5m starts that day; SBLX daily kept going to 07-10 and matches FABC to 2dp rounding (05-26 5.87/6.04/5.15/5.43 on both). Outcome on the real bars: `aborted` (09:30 bar hit the 5.76 stop before the zone was reached at 10:05). |
 | CUK.US | CCL.US | 2026-05-07 | 2026-10-14 | 2026-04-17 | Carnival DLC unification: Carnival plc (CUK) merged 1-for-1 into Carnival Corporation Ltd (CCL); CUK suspended before open 2026-05-07. The two tracked near-identically while dual-listed. |
@@ -38,6 +39,7 @@ Same listed security under a new symbol; one continuous price series.
 | SKLZ.US | FIRY.US | 2026-06-22 | 2026-10-20 | 2026-06-19 | Skillz renamed Firy Inc., NYSE SKLZ->FIRY 2026-06-22, CUSIP unchanged. EODHD kept serving SKLZ daily to 07-17 (plus a bogus 145.00 bar on the 06-19 holiday, which never reached the db) but SKLZ's 5m bars have no volume from 06-22 -- the SBLX pattern. FIRY daily identical. Outcome `expired_unfilled` -> `closed_stop`. |
 | SATS.US | ECHO.US | 2026-06-24 | 2026-10-12 | 2026-10-06, 2026-10-13 | Ticker-only rename, EchoStar Corporation (EchoStar IR). |
 | FDP.US | DMC.US | 2026-06-27 | 2026-09-30 | 2026-08-25 | Fresh Del Monte Produce renamed Del Monte Corporation, effective 2026-06-29 (last FDP trade 06-26). 2026-06-26 close 29.22 identical on both. |
+| MBAV.US | VLOS.US | 2026-07-15 | 2026-10-21 | 2026-06-24, 2026-07-02 | M3-Brigade Acquisition V (SPAC) renamed Velos Acquisition I Corp. after the ReserveOne deal was dropped (shareholder meeting 2026-07-17). EODHD's MBAV 5m bars have no volume from 07-15 while MBAV daily runs to 07-29; VLOS daily is identical from 07-14, VLOS 5m only starts 07-23. Both outcomes closed before the rename (unchanged). MBAV 07-02 stays a standing dead-5m warning (see below). |
 
 ## Stock-for-stock mergers (new_code, ratio ≠ 1.0)
 
@@ -53,8 +55,8 @@ boundary is `ratio × new_code`.
 ## Cash takeovers (cash_price, no successor)
 
 Position closed out at a fixed cash amount; flat zero-volume rows at
-`cash_price` from `effective_date` on (daily only; see `DESIGN_DECISIONS.md`
-on why there's no intraday equivalent).
+`cash_price` from `effective_date` on, as daily rows and, since 2026-10-21,
+as 5m bars too (see `DESIGN_DECISIONS.md`, "Intraday cash-out bars").
 
 | old_code | cash_price | effective_date | Added | Tip dates affected | What happened / how verified |
 |---|---|---|---|---|---|
@@ -71,7 +73,7 @@ They'll keep appearing in the nightly log's `daily` line; that's expected.
 |---|---|---|
 | HOOZ.US | 2026-08-13 | Leveraged single-stock ETF, short by 3 days (last data 2026-09-04). Not a rename/merger. Outcome resolved anyway (`aborted`). |
 | THR.US | 2026-04-28 | Short by 1 day (last data 2026-05-22). Thermon's real merger is 2026-06-01, after this tip's window, so that isn't the cause. Outcome resolved anyway (`closed_target`). |
-| MBAV.US | 2026-06-24 | Not a coverage gap: a thin SPAC (renamed Velos Acquisition I, VLOS, mid-July 2026) with two 5m days with no volume while daily traded (07-02, 07-23), so the nightly dead-5m check warns about it every run. Both days are after the trade (`closed_time` 07-01). Accepted as a standing warning (2026-10-20). |
+| MBAV.US | 2026-06-24, 2026-07-02 | Alias added for the rename (above), but 2026-07-02, before the rename, has 5m bars with no volume while daily traded 689,100 shares (EODHD's 5m data for the day is empty), so the nightly dead-5m check warns about it every run. Neither outcome is affected (the 06-24 trade closed 07-01; the 07-02 tip entered 07-06). Accepted as a standing warning (2026-10-20). |
 
 ## Lessons from the research so far
 

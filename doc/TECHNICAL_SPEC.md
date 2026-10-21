@@ -313,7 +313,7 @@ cash_price=None, reason=None)**
   `Database.to_pandas()` -- no separate backfill step.
 - Seeded 2026-09-30 with 5 rows: GMGI.US->MRDN.US, FDP.US->DMC.US,
   VSCO.US->VSXY.US, FLGC.US->ZSTK.US (all ratio 1.0), LBRDA.US->CHTR.US
-  (ratio 0.236). 24 rows as of 2026-10-20 -- see `doc/TICKER_ALIASES.md`
+  (ratio 0.236). 26 rows as of 2026-10-21 -- see `doc/TICKER_ALIASES.md`
   for the full list with reasons, plus tips investigated where no alias
   applies. Add a line there whenever an alias is added.
 
@@ -385,10 +385,10 @@ connection for its lifetime.
   not rescaled across an alias boundary.
 **_fetch_intraday_resolved(db, code, api_token, interval, from_ts, to_ts) -> pd.DataFrame**:
   intraday equivalent of `_fetch_daily_resolved()` — same behavior, Unix
-  timestamps instead of dates. No cash-for-scrip equivalent (raises
-  `NotImplementedError` if a cash-out alias is ever hit at intraday
-  granularity — see `doc/DESIGN_DECISIONS.md`, "extending ticker_aliases
-  resolution to intraday").
+  timestamps instead of dates. A cash-for-scrip alias resolves to
+  `_generate_intraday_cashout_rows()`: flat, zero-volume bars at
+  `cash_price` for every bar slot of every session from `effective_date`
+  (see `doc/DESIGN_DECISIONS.md`, "Intraday cash-out bars").
 
 ### Known limitations / gaps
 

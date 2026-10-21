@@ -549,7 +549,8 @@ detect for it once it's closed out. `_fetch_intraday_resolved()` raises
 `NotImplementedError` if this combination is ever actually hit, rather
 than silently returning wrong or no data. None of the five currently
 seeded aliases are cash-for-scrip, so this is unexercised in practice
-today, but kept as a loud guard rather than an assumption.
+today, but kept as a loud guard rather than an assumption. (Superseded
+2026-10-21: see "Intraday cash-out bars".)
 
 **Also fixed in the same pass:** `csv2pandas_intraday()` now raises a
 clear `ValueError` naming the ticker when EODHD returns the right columns
@@ -1566,6 +1567,28 @@ reminding.
 **Lesson recorded in `doc/TICKER_ALIASES.md`:** set an alias's
 `effective_date` from whichever feed stops first; for SBLX that was the 5m
 feed, nearly three months before daily.
+
+### Intraday cash-out bars (2026-10-21)
+**Problem:** the guard above was hit for real. The newsletter tipped
+NUVL.US on 2026-07-06, during GSK's $124.00 cash tender; the merger
+completed 07-15, inside the tip's 5m window. With NUVL's cash alias in
+place, `tips()`'s 5m fetch raised `NotImplementedError` (caught, logged,
+skipped), so the window could never be completed and `unresolved_tips()`
+would have flagged the tip every night. The outcome itself was right
+(`closed_time` at the 07-14 deadline, from bars an earlier NUVL tip had
+already fetched). The newsletter tipped NUVL three times during the
+tender, so this is likely to recur with later takeovers.
+
+**Decision:** `_fetch_intraday_resolved()` resolves a cash alias with
+`_generate_intraday_cashout_rows()`: flat bars at `cash_price`, `vo = 0`,
+for every bar slot (open up to the last bar before close, from the
+calendar's schedule) of every session from `effective_date`. The same
+convention as `_generate_cashout_rows()` for daily. Zero-volume bars never
+trigger an entry or exit (see "outcomes only triggers on real-volume
+bars"), so they only complete the window; any position still open at the
+cash-out time-exits at its last real close, at or near the deal price.
+The old objection (no real 5m price path exists) still holds, which is why
+the bars carry no volume rather than pretending to be trades.
 
 ---
 

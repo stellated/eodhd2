@@ -907,6 +907,43 @@ def _generate_cashout_rows(
     })
 
 
+def _generate_intraday_cashout_rows(
+    code: str, from_date: date, to_date: date, cash_price: float, interval: str
+) -> pd.DataFrame:
+    """Intraday counterpart of _generate_cashout_rows(): flat, zero-volume
+    bars at `cash_price` for every bar slot (open up to the last bar before
+    close) of every real trading session in [from_date, to_date].
+    Columns as csv2pandas_intraday() (no local_time; tips() adds it).
+    """
+    cols = ["code", "timestamp", "datetime", "local_date", "op", "hi", "lo", "cl", "vo"]
+    cal = _get_calendar(_suffix(code))
+    sessions = (
+        cal.sessions_in_range(pd.Timestamp(from_date), pd.Timestamp(to_date))
+        if from_date <= to_date
+        else []
+    )
+    if len(sessions) == 0:
+        return pd.DataFrame(columns=cols)
+    step = int(pd.tseries.frequencies.to_offset(_interval_to_freq(interval)).nanos // 10**9)
+    schedule = cal.schedule.loc[sessions]
+    ts, days = [], []
+    for s in sessions:
+        open_ts = int(schedule.loc[s, "open"].timestamp())
+        close_ts = int(schedule.loc[s, "close"].timestamp())
+        slots = range(open_ts, close_ts, step)
+        ts.extend(slots)
+        days.extend([s.date()] * len(slots))
+    return pd.DataFrame({
+        "code": code,
+        "timestamp": pd.array(ts, dtype="int64"),
+        "datetime": pd.to_datetime(ts, unit="s", utc=True)
+            .tz_localize(None).astype("datetime64[us]"),
+        "local_date": days,
+        "op": cash_price, "hi": cash_price, "lo": cash_price, "cl": cash_price,
+        "vo": 0,
+    })[cols]
+
+
 def _fetch_daily_resolved(
     db: "Database",
     code: str,
@@ -925,8 +962,8 @@ def _fetch_daily_resolved(
 
     Note: volume is NOT rescaled across an alias boundary (a split/merger's
     share-count change doesn't translate meaningfully into "old ticker's
-    volume"), only price columns (op/hi/lo/cl/ac) are. Daily-only -- there
-    is no intraday equivalent yet (not needed by any current caller).
+    volume"), only price columns (op/hi/lo/cl/ac) are.
+    _fetch_intraday_resolved() is the intraday equivalent.
     """
     if _depth > 10:
         raise ValueError(f"ticker_aliases chain too deep resolving {code} -- possible cycle?")
@@ -972,14 +1009,12 @@ def _fetch_intraday_resolved(
     everywhere else in this module, so the comparisons stay internally
     consistent even though that's not literally UTC midnight).
 
-    Cash-for-scrip aliases (new_code is None, _generate_cashout_rows()'s
-    case) have no intraday equivalent: that function produces one flat row
-    per trading *session*, which has no meaningful 5-minute analogue (no
-    real intraday price path exists for a position that no longer trades)
-    and isn't needed by any current caller -- a cashed-out position has no
-    further entry/exit to detect by the time its intraday window would
-    need this. Raises NotImplementedError rather than silently producing
-    wrong or no data if this combination is ever actually hit.
+    Cash-for-scrip aliases (new_code is None): the post-boundary segment is
+    flat, zero-volume bars at cash_price for every bar slot of every session
+    (_generate_intraday_cashout_rows()), the 5-minute counterpart of
+    _generate_cashout_rows(). Zero volume means they never trigger an
+    outcome; they only complete the window, so a tip tipped during a cash
+    tender (NUVL) isn't flagged as short by unresolved_tips() forever.
     """
     if _depth > 10:
         raise ValueError(f"ticker_aliases chain too deep resolving {code} -- possible cycle?")
@@ -995,12 +1030,6 @@ def _fetch_intraday_resolved(
     if alias is None or to_ts < boundary_ts:
         return fetch_intraday(code, api_token, interval, from_ts=from_ts, to_ts=to_ts)
 
-    if alias["new_code"] is None:
-        raise NotImplementedError(
-            f"{code}: cash-for-scrip ticker_aliases entry has no intraday "
-            f"equivalent (see _fetch_intraday_resolved()'s docstring)."
-        )
-
     segments = []
     if from_ts < boundary_ts:
         segments.append(
@@ -1008,12 +1037,18 @@ def _fetch_intraday_resolved(
         )
 
     post_from = max(from_ts, boundary_ts)
-    post = _fetch_intraday_resolved(
-        db, alias["new_code"], api_token, interval, post_from, to_ts, _depth=_depth + 1
-    ).copy()
-    for col in ("op", "hi", "lo", "cl"):
-        post[col] = post[col] * alias["ratio"]
-    post["code"] = code
+    if alias["new_code"] is None:
+        post = _generate_intraday_cashout_rows(
+            code, datetime.fromtimestamp(post_from).date(),
+            datetime.fromtimestamp(to_ts).date(), alias["cash_price"], interval,
+        )
+    else:
+        post = _fetch_intraday_resolved(
+            db, alias["new_code"], api_token, interval, post_from, to_ts, _depth=_depth + 1
+        ).copy()
+        for col in ("op", "hi", "lo", "cl"):
+            post[col] = post[col] * alias["ratio"]
+        post["code"] = code
     segments.append(post)
 
     return pd.concat(segments, ignore_index=True).sort_values("timestamp").reset_index(drop=True)
