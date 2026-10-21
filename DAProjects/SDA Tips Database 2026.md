@@ -1,0 +1,1 @@
+The SDA database contains details of tips from 8th April 2026 to 1st September 2026 inclusive (50 days).  Tips for days after 1st September are being accumulated for out-of-sample testing.
