@@ -54,13 +54,9 @@ Main question: does ORB make good profit?
 
 Article at https://www.alphanume.com/guides/next-day-movers-guide
 
-Also
-
-* Does that Reddit post add value to ORB here?
-
 Data required
 
-* daily 5m data for each tip covering the day of the tip and the 20 prior days
+* daily 5m data for each tip covering the day that the tip relates to and the 20 prior days
 
 
 
@@ -112,7 +108,7 @@ Wikipedia Views https://quant-galore.medium.com/the-quant-traders-guide-to-the-a
 
 S&P500 risk regime https://quant-galore.medium.com/the-quant-traders-guide-to-the-alphanume-market-data-api-62adffe1972d (add value to various things, see how SDA's traffic lights compare to this.  Also use this instead of beta when constructing an ersatz QGMI index)
 
-Historical Optional Tickers https://quant-galore.medium.com/the-quant-traders-guide-to-the-alphanume-market-data-api-62adffe1972d (build an index)
+Historical Optioned Tickers https://quant-galore.medium.com/the-quant-traders-guide-to-the-alphanume-market-data-api-62adffe1972d (build an index)
 
 SEC Filing Intensity https://quant-galore.medium.com/the-quant-traders-guide-to-the-alphanume-market-data-api-62adffe1972d (Add value to QGMI and SDA, behaviour of stock may also depend on market cap, so should be accompanied with Historical Market Cap dataset)
 
