@@ -1,0 +1,203 @@
+# Alphanume Trial Plan
+
+Drafted 2026-10-23 (Melbourne). Covers what to do before and during the
+3-day free trial, what each analysis repo gets, and how to decide whether
+to subscribe. Times are Melbourne (AEDT, UTC+11) unless marked ET (New
+York; EDT, UTC-4, until US clocks change on 1 November).
+
+## Facts this plan rests on (checked 2026-10-23)
+
+- **Trial:** <https://www.alphanume.com/signup?plan=pro&billing=monthly>.
+  "Full Pro access for 3 days": every dataset, REST, MCP and dashboard
+  exports. It **converts to paid automatically** ($349 monthly, or
+  $1,999/year if you pick yearly) unless cancelled before it ends.
+- **Fees are non-refundable**, including partial periods.
+- **Licence:** "Upon termination, your license to use the Services ends
+  immediately." The terms don't say whether data downloaded during a trial
+  may be kept and used afterwards. This decides whether a trial can
+  replace a paid month (see "Before the trial").
+- **API:** JSON only, API key in an `X-API-Key` header, 600 requests a
+  minute (HTTP 429 beyond). The terms forbid exceeding rate limits or
+  "aggressively" scraping. Many endpoints return up to 50,000 rows per
+  response with cursor paging, so a full history pull takes minutes to
+  hours, not days.
+- **Nothing is reachable without a key:** every endpoint returned "API key
+  required" when probed, so no schema or history depth can be checked
+  before the trial.
+- **History depths are mostly not published.** Known: Lockup Expirations
+  from 2021; Reverse Splits' market cap unavailable before 2024; Short
+  Locates only from 2026-10-08. Optionable Tickers is a monthly snapshot
+  (first trading day of each month). Ticker Classification is current
+  state only (no history).
+- **There is a Reverse Splits dataset** (`/v1/capital/reverse-splits`),
+  which the Reverse Splits project should use.
+- **Publication times** (ET): Pre-Market Drop Risk scores use prices up to
+  09:00 (publication time not stated); Next-Day Movers 15:30 for the next
+  session; S&P 500 Risk Regime 10:10; QGMI rebalances monthly at 16:05;
+  Filing Intensity refreshed nightly at 23:30.
+
+## Before the trial
+
+**Ian:**
+1. Email hello@alphanume.com and ask:
+   - May data downloaded during a trial or a paid month be kept and used
+     for private research after the subscription ends?
+   - History start date and typical rows per day for: Next-Day Movers,
+     Pre-Market Drop Risk, QGMI, Optionable Tickers, Reverse Splits,
+     Dilution, Filing Intensity, Historical Market Cap, Wikipedia Views,
+     S&P 500 Risk Regime.
+   - When Pre-Market Drop Risk is published each morning.
+   - Whether the trial needs a card.
+2. Decide monthly or yearly at signup (break-even is about 5.7 months),
+   and put a reminder in the calendar 12 hours before the trial ends.
+3. Pick a start time (see "Timing").
+
+**This project (eodhd2), to have ready before signing up:**
+1. **A raw capture fetcher** (`scripts/get_alphanume.py`): for a given
+   endpoint and parameters, page through every result (each endpoint's
+   own cursor fields), and store each response unchanged with its
+   endpoint, parameters and UTC fetch time. Throttled well below the
+   limit (about 60 requests a minute), resumable after a failure, and
+   tested offline against the sample responses in alphanume's docs.
+   Parsing into proper tables is deliberately left until after the trial:
+   during the trial the only job is to capture everything once.
+2. **Where raw captures go:** a separate `alphanume.db` on OneDrive, not
+   `sda.db`, using the same pull/`safe_push` mechanism. This keeps
+   `sda.db` (about 1 GB) from growing with raw JSON. Parsed tables
+   (e.g. `ndm_picks`) join `sda.db` later, as the NDM design decision
+   says.
+3. **Live capture timers**, enabled only for the trial days:
+   Pre-Market Drop Risk at about 09:05 and 09:30 ET, Next-Day Movers at
+   15:35 ET, Risk Regime at 10:15 ET. These record what was published on
+   the day, to compare with the history pulled later ("point-in-time,
+   never revised" is a claim to test, not assume).
+4. **A pull list:** for each project, the exact endpoints and parameters
+   for the full history (below), so day 1 is only "run it".
+5. **Check what's needed from EODHD and estimate the call budget**: the
+   number of distinct tickers alphanume's history implies is only known
+   after the pull, so the script that turns a pull into an EODHD fetch
+   list and a call/storage estimate is written beforehand.
+
+Not needed before the trial: SOFR/RBA rates history, dividends (on hold),
+parsing tables, anything on the analysis side.
+
+## Timing
+
+**Recommended: start early Wednesday 28 October**, e.g. 06:00 Melbourne
+(Tuesday 15:00 ET). The 72 hours then give three live captures of each
+daily dataset:
+
+| Capture | Dates (ET) |
+|---|---|
+| Next-Day Movers at 15:35 | Tue 27, Wed 28, Thu 29 |
+| Pre-Market Drop Risk at 09:05 | Wed 28, Thu 29, Fri 30 |
+
+The trial ends Saturday 31 October about 06:00 Melbourne (Friday 15:00
+ET). The captures run on timers, so you don't need to be awake for them.
+The final tip backfill (Monday 26 October 04:00) is finished by then.
+
+**The weekend of 1 November is a poor alternative:** a trial starting
+Saturday morning Melbourne (Friday afternoon ET) contains only one US
+session (Monday 2 November), so only one live capture of each dataset.
+If the fetcher isn't ready by Tuesday, the next good slot is another
+weekday morning, e.g. Wednesday 4 November.
+
+## During the trial
+
+**Day 1 (Wednesday morning Melbourne):**
+1. Sign up, create the API key, store it in `.env` (never in the repo).
+2. Call each endpoint once; save the response's field list and the
+   earliest and latest dates.
+3. Run the full history pulls (pull list below), in order of value:
+   Next-Day Movers, Pre-Market Drop Risk, QGMI, Optionable Tickers,
+   Reverse Splits, Dilution, Historical Market Cap, Filing Intensity,
+   Risk Regime, Wikipedia Views, Ticker Classification.
+4. Record row counts, date ranges and distinct tickers per dataset.
+5. Optional: connect the hosted MCP server in an analysis session to try
+   it out.
+
+**Day 2 (Thursday morning Melbourne):**
+1. Check the first live captures arrived.
+2. Data-quality checks on the pulls:
+   - gaps in dates (trading days with no rows);
+   - duplicates;
+   - tickers EODHD doesn't know (a measure of how much rename and
+     delisting work each project faces);
+   - IG coverage via `ig_margins`: what share of picks are tradeable, and
+     for the short projects shortable, and at what borrow rate.
+3. A first look at each dataset's own outcome fields (they publish
+   forward returns), e.g. how often Pre-Market Drop Risk's top-ranked
+   names really fell 5% or more versus the whole list; check a sample of
+   those returns against EODHD daily bars.
+
+**Day 3 (Friday morning Melbourne, last full day):**
+1. Pull the recent history again for the live-capture dates and compare
+   with the live captures: same tickers, ranks and scores?
+2. Fill any gaps in the pulls.
+3. Go/no-go (below). Cancel before about 06:00 Saturday if no-go.
+
+## Pull list
+
+| Project | Alphanume datasets | EODHD data |
+|---|---|---|
+| QGMI | QGMI constituents; Optionable Tickers (all monthly snapshots); S&P 500 Risk Regime; Wikipedia Views; Filing Intensity; Historical Market Cap; Ticker Classification | Daily for each constituent for its index month plus the prior year |
+| NDM ORB | Next-Day Movers | 5m for each trade date (pick date + 1 session) plus daily for the 20 prior days; before October 2020, 1m data aggregated to 5m (see below) |
+| Pre-Market Drop | Pre-Market Drop Risk | Daily for the 20 prior days; 1m data (includes pre-market) or 5m for the trade date |
+| Reverse Splits | Reverse Splits | Daily ±30 days around each split; EODHD's splits endpoint for cross-checking |
+| Dilutive S-1 | Dilution; Filing Intensity; Historical Market Cap | Daily for 1 year before and 30 days after each filing |
+| SDA tips | S&P 500 Risk Regime (to compare with the newsletter's regime colours) | Already in `sda.db` |
+
+## Handover to the analysis repos
+
+One Claude overseeing six repos: SDA, QGMI, NDM ORB, Pre-Market Drop,
+Reverse Splits and Dilutive S-1. Each gets:
+
+- **A dated, read-only db extract** with only the tables it needs, plus a
+  note of which pull and which `sda.db` copy it came from.
+- **A schema doc** like `doc/OUTCOMES_SCHEMA.md`: column meanings, how
+  rows were produced, known caveats.
+- **Data caveats:** the relevant parts of `doc/LIMITATIONS.md` (5m
+  volume, padded vo=0 rows, unadjusted prices, ticker aliases), and the
+  result of the live-vs-history check for its dataset.
+- **IG coverage** through a view that resolves renamed tickers
+  (`ig_margins_resolved`, to be built here), with the caveat that only
+  researched tickers have aliases.
+- **A README** with Ian's main question and data list from
+  `Alphanume Trading Strategies.md`.
+
+Shared code across the six (IG cost model with financing and borrow,
+liquidity estimators, db access) needs a home: either a small seventh
+library repo, or one of the six that the others import from. To decide
+before the first analysis repo is set up.
+
+**SDA specifically:** the in-sample extract (tips up to the split date,
+with every later tip and outcome physically deleted), `OUTCOMES_SCHEMA.md`,
+`TICKER_ALIASES.md`. `outcomes` stays here as the baseline simulation;
+variants are built on the analysis side.
+
+## Go/no-go for a paid subscription
+
+Go if all of these hold:
+1. **Licence:** the answer on keeping data is acceptable, or the cost of
+   staying subscribed for as long as the analysis needs the data is.
+2. **History depth:** enough for the main questions. QGMI's
+   cherry-picking question needs several years including a bear market
+   (2022); NDM and the short projects need at least about two years to
+   give a useful number of trades.
+3. **Point-in-time integrity:** the live captures match the re-pulled
+   history for the same dates.
+4. **Tradeability:** a useful share of picks is tradeable at IG, and for
+   the short projects shortable at a borrow rate that leaves an edge.
+5. **Sample size:** picks per day × history days gives enough trades
+   after the IG and liquidity filters.
+6. **Early signal:** the datasets' own forward-return fields, spot-checked
+   against EODHD, look worth testing properly (not proof, just not
+   obviously nothing).
+7. **EODHD budget:** the call and storage estimate fits the daily quota
+   over a reasonable number of weeks.
+
+**Whether a paid month is needed:** if the trial captures every history
+and the licence lets you keep using it, no. If the licence doesn't, the
+question becomes how long the analysis needs, and monthly versus yearly.
+A paid month also helps if the trial shows something needing more than
+three days of live captures to settle (e.g. revisions to history).
