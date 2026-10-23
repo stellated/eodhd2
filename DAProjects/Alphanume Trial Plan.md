@@ -53,7 +53,8 @@ York; EDT, UTC-4, until US clocks change on 1 November).
 3. Pick a start time (see "Timing").
 
 **This project (eodhd2), to have ready before signing up:**
-1. **A raw capture fetcher** (`scripts/get_alphanume.py`): for a given
+1. **A raw capture fetcher** (`scripts/get_alphanume.py`, done 2026-10-23,
+   offline-tested; untested against real data until the trial): for a given
    endpoint and parameters, page through every result (each endpoint's
    own cursor fields), and store each response unchanged with its
    endpoint, parameters and UTC fetch time. Throttled well below the
@@ -61,16 +62,20 @@ York; EDT, UTC-4, until US clocks change on 1 November).
    tested offline against the sample responses in alphanume's docs.
    Parsing into proper tables is deliberately left until after the trial:
    during the trial the only job is to capture everything once.
-2. **Where raw captures go:** a separate `alphanume.db` on OneDrive, not
-   `sda.db`, using the same pull/`safe_push` mechanism. This keeps
-   `sda.db` (about 1 GB) from growing with raw JSON. Parsed tables
+2. **Where raw captures go** (done): a separate `alphanume.db` on mars's
+   own disk (`~/data/alphanume.db`), copied to OneDrive after every run
+   (`ops/run_alphanume.sh`) but never pulled back, so a history pull
+   lasting hours and the live timers can write at the same time. This
+   keeps `sda.db` (about 1 GB) from growing with raw JSON. Parsed tables
    (e.g. `ndm_picks`) join `sda.db` later, as the NDM design decision
    says.
-3. **Live capture timers**, enabled only for the trial days:
-   Pre-Market Drop Risk at about 09:05 and 09:30 ET, Next-Day Movers at
-   15:35 ET, Risk Regime at 10:15 ET. These record what was published on
-   the day, to compare with the history pulled later ("point-in-time,
-   never revised" is a claim to test, not assume).
+3. **Live capture timers** (templates done; install and enable just before
+   the trial, disable after): Pre-Market Drop Risk at 09:05 and 09:35 ET,
+   Risk Regime at 10:15 ET, Next-Day Movers at 15:35 and 16:35 ET. These
+   record what was published on the day, to compare with the history
+   pulled later ("point-in-time, never revised" is a claim to test, not
+   assume). Two captures a day for two of them also show whether
+   anything changes soon after publication.
 4. **A pull list:** for each project, the exact endpoints and parameters
    for the full history (below), so day 1 is only "run it".
 5. **Check what's needed from EODHD and estimate the call budget**: the
@@ -89,8 +94,8 @@ daily dataset:
 
 | Capture | Dates (ET) |
 |---|---|
-| Next-Day Movers at 15:35 | Tue 27, Wed 28, Thu 29 |
-| Pre-Market Drop Risk at 09:05 | Wed 28, Thu 29, Fri 30 |
+| Next-Day Movers at 15:35 and 16:35 | Tue 27, Wed 28, Thu 29 |
+| Pre-Market Drop Risk at 09:05 and 09:35 | Wed 28, Thu 29, Fri 30 |
 
 The trial ends Saturday 31 October about 06:00 Melbourne (Friday 15:00
 ET). The captures run on timers, so you don't need to be awake for them.
@@ -105,10 +110,13 @@ weekday morning, e.g. Wednesday 4 November.
 ## During the trial
 
 **Day 1 (Wednesday morning Melbourne):**
-1. Sign up, create the API key, store it in `.env` (never in the repo).
+1. Sign up, create the API key, store it in `.env` as `ALPHANUME_API_KEY`
+   (`.env` is gitignored). A new key can take a few minutes to activate
+   (per the API's own 401 message).
 2. Call each endpoint once; save the response's field list and the
    earliest and latest dates.
-3. Run the full history pulls (pull list below), in order of value:
+3. Run the full history pulls (`ops/run_alphanume.sh pull JOB ...`; the
+   pull list is below), in order of value:
    Next-Day Movers, Pre-Market Drop Risk, QGMI, Optionable Tickers,
    Reverse Splits, Dilution, Historical Market Cap, Filing Intensity,
    Risk Regime, Wikipedia Views, Ticker Classification.

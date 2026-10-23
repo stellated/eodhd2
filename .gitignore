@@ -31,3 +31,7 @@ ops/eodhd-ig-margins.timer
 # tree (eml/html/csv, any new dated files) with zero ongoing maintenance --
 # no need to add a new pattern each time a new file type or date shows up.
 scripts/data/
+
+# alphanume trial units (host-specific paths), templates tracked as .example
+ops/eodhd-alphanume-live@.service
+ops/eodhd-alphanume-*.timer

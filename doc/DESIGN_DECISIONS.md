@@ -1913,6 +1913,42 @@ subscribing is then an analysis-project decision.
   call budget and the db growth rate);
 - whether the endpoint paginates, and how.
 
+### Alphanume trial capture: raw responses first, parse later (2026-10-23)
+**Context:** alphanume now offers a 3-day free trial with full Pro access
+(see `DAProjects/Alphanume Trial Plan.md`). Nothing is reachable without a
+key, history depths aren't published, and several endpoints' paging and
+row caps aren't documented exactly.
+
+**Decision:** `scripts/get_alphanume.py` stores every HTTP response body
+unchanged in a separate `alphanume.db` (`windows` + `raw_responses`), and
+parses nothing. Parsing into tables like `ndm_picks` happens after the
+trial, from the stored bodies, with no time pressure; during the trial the
+only goal is to capture each history once, plus live snapshots to compare
+with it.
+- **Resumable:** a request window is marked complete only once all its
+  pages are stored, and a rerun skips completed windows.
+- **Defensive about truncation:** paged endpoints follow `next_cursor`
+  (each key sent back as `cursor_<key>`); a window from an unpaged endpoint
+  returning 1,000+ rows is marked superseded and refetched as two halves,
+  in case it was silently cut off.
+- **Polite:** one request a second (the limit is 600 a minute and the
+  terms forbid aggressive scraping), with backoff on 429/5xx.
+- **Per-ticker datasets** (market cap, filing intensity, Wikipedia views)
+  are pulled only for tickers already captured from the strategy datasets,
+  rather than the whole market.
+
+**Why not `sda.db` and the pull/`safe_push` sync:** `alphanume.db` lives on
+mars's disk and is only copied to OneDrive after each run
+(`ops/run_alphanume.sh`, a consistent snapshot via SQLite's backup API). A
+history pull can run for hours while the live-capture timers also need to
+write; with the pull/push model one of them would have its push refused.
+WAL mode lets both write the same local file. Nothing else writes it, so
+there's no remote copy to race against.
+
+**Timers** (`eodhd-alphanume-*.timer`, New York time, trial days only):
+Pre-Market Drop Risk 09:05 and 09:35, Risk Regime 10:15, Next-Day Movers
+15:35 and 16:35.
+
 ---
 
 ## v2.0 deferred features

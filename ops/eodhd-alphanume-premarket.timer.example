@@ -1,0 +1,15 @@
+# Copy to ops/eodhd-alphanume-premarket.timer (drop the .example), then symlink or copy
+# into /etc/systemd/system/ and `systemctl enable --now eodhd-alphanume-premarket.timer`
+# for the trial days only. Times are New York time. Gitignored alongside
+# eodhd-alphanume-live@.service.
+
+[Unit]
+Description=Capture Pre-Market Drop Risk after its 09:00 ET cutoff, and again after the open
+
+[Timer]
+Unit=eodhd-alphanume-live@premarket_drop.service
+OnCalendar=Mon..Fri *-*-* 09:05:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 09:35:00 America/New_York
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+# Copy to ops/eodhd-alphanume-regime.timer (drop the .example), then symlink or copy
+# into /etc/systemd/system/ and `systemctl enable --now eodhd-alphanume-regime.timer`
+# for the trial days only. Times are New York time. Gitignored alongside
+# eodhd-alphanume-live@.service.
+
+[Unit]
+Description=Capture the S&P 500 Risk Regime after its 10:10 ET publication
+
+[Timer]
+Unit=eodhd-alphanume-live@risk_regime.service
+OnCalendar=Mon..Fri *-*-* 10:15:00 America/New_York
+
+[Install]
+WantedBy=timers.target

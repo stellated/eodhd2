@@ -1,0 +1,15 @@
+# Copy to ops/eodhd-alphanume-ndm.timer (drop the .example), then symlink or copy
+# into /etc/systemd/system/ and `systemctl enable --now eodhd-alphanume-ndm.timer`
+# for the trial days only. Times are New York time. Gitignored alongside
+# eodhd-alphanume-live@.service.
+
+[Unit]
+Description=Capture Next-Day Movers after its 15:30 ET publication, and again after the close
+
+[Timer]
+Unit=eodhd-alphanume-live@ndm.service
+OnCalendar=Mon..Fri *-*-* 15:35:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 16:35:00 America/New_York
+
+[Install]
+WantedBy=timers.target
