@@ -802,6 +802,9 @@ a hand-run script:
   price) -- roughly 6,600-6,800 calls total against a 1,200/day EODHD
   cap. Comfortably spreadable, since weekdays currently run `tips-only`
   (zero EODHD calls of their own), leaving the full daily cap free.
+  (Corrected 2026-10-23: the account's real limit is 100,000 calls a
+  day, and an intraday request costs 5 calls, a daily one 1 -- see
+  "EODHD budget for the alphanume datasets".)
 - **Why a temporary systemd timer, not a script Ian runs by hand each
   day:** Ian's choice, so the fortnight-ish backfill advances on its own
   without a manual step each weekday morning, while he reviews the
@@ -1833,7 +1836,8 @@ of the db plus a schema doc (the same pattern as `doc/OUTCOMES_SCHEMA.md`).
   - unreliable 5m volume (`doc/LIMITATIONS.md` §6);
   - windows that were never fully fetched;
   - the remote-overwrite race `safe_push()` guards against.
-- **One EODHD key means one daily quota** (1,200 calls). Two projects
+- **One EODHD key means one daily quota** (100,000 calls; intraday
+  requests cost 5 each). Two projects
   fetching on their own schedules would compete for it with neither aware
   of the other; one scheduler can share it out, e.g. between the tips and
   the movers backfills.
@@ -1948,6 +1952,40 @@ there's no remote copy to race against.
 **Timers** (`eodhd-alphanume-*.timer`, New York time, trial days only):
 Pre-Market Drop Risk 09:05 and 09:35, Risk Regime 10:15, Next-Day Movers
 15:35 and 16:35.
+
+### EODHD budget for the alphanume datasets (2026-10-23)
+**Context:** how many EODHD calls, and how much storage, the alphanume
+datasets need is only known once their history is pulled, so
+`scripts/eodhd_budget.py` turns a pull into a fetch list and an estimate.
+It reads `alphanume.db` and makes no price calls.
+
+**Costs, checked against the account's usage counter (`/api/user`):** a
+daily request costs 1 call whatever its date range, an intraday request 5
+(5m and 1m alike). The limit is `dailyRateLimit` = 100,000 calls a day,
+not the 1,200 earlier entries assumed.
+
+**Decisions in the estimate:**
+- **Daily:** one request per ticker spanning all its events, so daily
+  calls equal distinct tickers. Stored rows count only sessions inside the
+  needed windows (trimmed, as `tips()` does).
+- **Intraday:** two counts. One request per event day is what `tips()`
+  does today; merging a ticker's event days into spans of at most 600 days
+  (5m) or 120 days (1m) needs a new fetch path but costs far fewer calls.
+  On synthetic data shaped like NDM (10 picks a day) plus Pre-Market Drop
+  (20 a day) from 2019, that's 286k calls one per event against 38k merged.
+- **NDM's `date` is taken as the pick date** and the trade day as the next
+  session; before 5m starts (2020-10) the trade day comes from 1m,
+  aggregated to 5m. Both to confirm against real responses.
+- **Flagged, not solved:** daily sessions before 2006-06-30 (clipped by
+  `csv2pandas_daily()`), 1m days before 2015 (coverage unchecked), tickers
+  missing from EODHD's current and delisted symbol lists (alias research),
+  and rows with no usable date (`DATE_FIELDS` is a guess per dataset).
+
+**Storage finding:** Pre-Market Drop's 1m days dominate. A padded 1m day
+from 04:00 to 20:00 is 960 rows against 79 for a 5m day, so on the
+synthetic data above they come to about 4.7 GB of the 5.3 GB total.
+Storing only the hours the strategy uses (e.g. 04:00-10:30), or putting
+1m in its own db file, is a decision for when the real numbers are in.
 
 ---
 

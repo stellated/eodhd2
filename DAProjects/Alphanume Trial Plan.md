@@ -78,10 +78,16 @@ York; EDT, UTC-4, until US clocks change on 1 November).
    anything changes soon after publication.
 4. **A pull list:** for each project, the exact endpoints and parameters
    for the full history (below), so day 1 is only "run it".
-5. **Check what's needed from EODHD and estimate the call budget**: the
-   number of distinct tickers alphanume's history implies is only known
-   after the pull, so the script that turns a pull into an EODHD fetch
-   list and a call/storage estimate is written beforehand.
+5. **Check what's needed from EODHD and estimate the call budget** (done,
+   `scripts/eodhd_budget.py`): turns a pull into an EODHD fetch list and a
+   call/storage estimate, and lists tickers EODHD's symbol lists don't
+   know. Run it on day 2:
+   `eodhd_budget.py fetch-symbols ~/data/eodhd_symbols` (2 calls), then
+   `eodhd_budget.py --db-path ~/data/alphanume.db --symbols
+   ~/data/eodhd_symbols/*.csv --fetch-list fetch_list.csv`.
+   EODHD's limit is 100,000 calls a day (an intraday request costs 5), so
+   calls are unlikely to be the constraint; storage for 1m pre-market data
+   may be.
 
 Not needed before the trial: SOFR/RBA rates history, dividends (on hold),
 parsing tables, anything on the analysis side.
@@ -120,7 +126,10 @@ weekday morning, e.g. Wednesday 4 November.
    Next-Day Movers, Pre-Market Drop Risk, QGMI, Optionable Tickers,
    Reverse Splits, Dilution, Historical Market Cap, Filing Intensity,
    Risk Regime, Wikipedia Views, Ticker Classification.
-4. Record row counts, date ranges and distinct tickers per dataset.
+4. Record row counts, date ranges and distinct tickers per dataset
+   (`get_alphanume.py summary`). Check the date field names against
+   `DATE_FIELDS` in `eodhd_budget.py`, and whether NDM's `date` is the pick
+   date or the trade date.
 5. Optional: connect the hosted MCP server in an analysis session to try
    it out.
 
@@ -130,7 +139,8 @@ weekday morning, e.g. Wednesday 4 November.
    - gaps in dates (trading days with no rows);
    - duplicates;
    - tickers EODHD doesn't know (a measure of how much rename and
-     delisting work each project faces);
+     delisting work each project faces), and the EODHD call and storage
+     estimate: both from `eodhd_budget.py`;
    - IG coverage via `ig_margins`: what share of picks are tradeable, and
      for the short projects shortable, and at what borrow rate.
 3. A first look at each dataset's own outcome fields (they publish
