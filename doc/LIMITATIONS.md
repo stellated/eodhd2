@@ -55,7 +55,10 @@
   taken over since are wrong or missing there (cash takeovers still show
   as open, borrow rates are 2.5 years old). Snapshots from 2026-10-23 on
   come from IG's current file.
-- So there's no IG data as of a tip's own date. The 2024 file is too old
+- Real snapshots (by `source_modified`): 2022-01-17, monthly 2023-08-21
+  to 2024-04-10, 2025-10-06, then 2026-10-23 on. Pick by
+  `source_modified`, not `download_date`.
+- So there's no IG data as of a 2026 tip's own date. The 2024 file is too old
   for recent listings; the current one omits stocks delisted since the
   tip (survivorship), and borrow rates and shortable flags change over
   time.

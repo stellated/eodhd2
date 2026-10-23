@@ -1059,6 +1059,24 @@ Neither is a fair historical coverage figure: the 2024 file is too old
 for recent listings, and the current one omits stocks delisted since
 their tip (survivorship). Only researched renames have aliases.
 
+**History loaded the same day.** IG keeps no past versions (its chatbot
+confirmed this), so `ig_margins` now also holds every real snapshot we
+could find, each with `source_modified` taken from the file's own
+`docProps/core.xml` created time (IG generates the file about 23:00 UTC):
+- the nebula archive's 10 distinct files, 2023-08-22 to 2024-05-01
+  (generated 2023-08-21 to 2024-04-10; the 2024-03-01 file was already a
+  week old);
+- two Wayback Machine captures of the AU retail file: 2022-01-17
+  (marketdatasystems.com copy) and 2025-10-07 (ig.com, generated
+  2025-10-06). Their `download_date` is the capture date. Archived next
+  to the others as `tiered.<date>.wayback.xlsx`.
+
+The Wayback Machine has nothing else for the AU retail file or the stock
+deal settings PDF. Its 2025-10-08 "Tiered Margin Australia.xlsx" has
+Professional-level margins (5-10%) and was skipped. The 2026-04-01 to
+2026-10-12 snapshots are still copies of the 2024-04-10 file (see
+`source_modified`).
+
 ---
 
 ## outcomes design (2026-10-07)
