@@ -188,6 +188,17 @@ def parse_tiered_spreadsheet(xlsx_path: Path, download_date: date,
     root = df["reuters"].str.split(".", n=1).str[0]
     df["code"] = root + "." + df["country"].map(COUNTRY_SUFFIX)
 
+    # Two RICs can share a root (WBCPJ.AX, a Westpac preference share, and
+    # WBCPJ.AX1, a Westpac capital note, in the 2026-10-23 file): keep the
+    # one whose exchange suffix has no digit, and log the other.
+    numbered = df["reuters"].str.split(".", n=1).str[1].str.contains(r"\d", na=False)
+    df = df.assign(_numbered=numbered).sort_values("_numbered", kind="stable")
+    dup = df["code"].duplicated()
+    if dup.any():
+        log.warning("dropped %d row(s) sharing a code with another RIC: %s", dup.sum(),
+                    ", ".join(df.loc[dup, "reuters"]))
+    df = df[~dup].drop(columns="_numbered").sort_index()
+
     # IG's feed emits this exact sentinel magnitude -- confirmed identical
     # across 13 unrelated tickers with very different borrow rates, not a
     # genuine per-security overflow -- when it has no real tier1 boundary

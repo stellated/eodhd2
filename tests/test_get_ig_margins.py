@@ -297,3 +297,15 @@ def test_resolved_view_drops_cashed_out_symbol_after_takeover(tmp_path):
         _load_stale_snapshot(tmp_path, db, [_row("APLS.O", "Apellis", "UNITED STATES")])
         _load_current_snapshot(tmp_path, db, [_row("APLS.O", "Someone else", "UNITED STATES")])
         assert [r[2] for r in _resolved(db, "APLS.US")] == ["2026-10-01"]
+
+
+def test_parse_keeps_plain_ric_when_two_share_a_code(tmp_path):
+    xlsx = tmp_path / "tiered.xlsx"
+    _write_fixture_xlsx(xlsx, [
+        _row("WBCPJ.AX1", "Westpac Capital Notes 7", "AUSTRALIA"),
+        _row("WBCPJ.AX", "Westpac Banking Corp - Pfd", "AUSTRALIA"),
+    ])
+
+    df = parse_tiered_spreadsheet(xlsx, date(2026, 10, 23))
+
+    assert df[["code", "reuters"]].values.tolist() == [["WBCPJ.AU", "WBCPJ.AX"]]
