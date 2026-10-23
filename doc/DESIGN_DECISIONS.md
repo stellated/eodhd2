@@ -2040,7 +2040,10 @@ It reads `alphanume.db` and makes no price calls.
 **Costs, checked against the account's usage counter (`/api/user`):** a
 daily request costs 1 call whatever its date range, an intraday request 5
 (5m and 1m alike). The limit is `dailyRateLimit` = 100,000 calls a day,
-not the 1,200 earlier entries assumed.
+not the 1,200 earlier entries assumed. 1,200 is real but per minute: every
+response carries `X-RateLimit-Limit: 1200`, and `X-RateLimit-Remaining`
+drops by one per request (including `/api/user`, which `apiRequests`
+doesn't count) and refills within a minute (checked 2026-10-23).
 
 **Decisions in the estimate:**
 - **Daily:** one request per ticker spanning all its events, so daily
