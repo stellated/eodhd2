@@ -4,11 +4,12 @@ import pandas as pd
 
 from scripts.get_ig_margins import (
     RAW_COLUMNS,
+    create_resolved_view,
     download_spreadsheet,
     parse_tiered_spreadsheet,
     write_to_sqlite,
 )
-from src.eodhd_io import Database
+from src.eodhd_io import Database, add_ticker_alias
 
 
 def _write_fixture_xlsx(path, rows):
@@ -191,5 +192,70 @@ def test_download_spreadsheet_curls_when_missing(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     args, kwargs = calls[0]
-    assert str(out_path) in args[0]
+    assert str(out_path) in args[0] and "-sLR" in args[0]
     assert kwargs.get("check") is True
+
+
+def _resolved(db, code):
+    return db.conn.execute(
+        "SELECT ig_code, renamed_on, download_date, description FROM ig_margins_resolved "
+        "WHERE code = ? ORDER BY download_date", (code,)).fetchall()
+
+
+def _load_stale_snapshot(tmp_path, db, rows):
+    """A file IG last changed on 2024-04-10, downloaded on 2026-10-01."""
+    xlsx = tmp_path / "tiered.xlsx"
+    _write_fixture_xlsx(xlsx, rows)
+    write_to_sqlite(parse_tiered_spreadsheet(xlsx, date(2026, 10, 1), date(2024, 4, 10)), db)
+
+
+def test_source_modified_is_stored(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        _load_stale_snapshot(tmp_path, db, [_row("BHP.AX", "BHP Group", "AUSTRALIA")])
+        assert db.conn.execute("SELECT source_modified FROM ig_margins").fetchone() == (
+            "2024-04-10",)
+
+
+def test_resolved_view_finds_new_symbol_under_old_ig_row(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "GLTO.US", date(2026, 3, 10), new_code="DMRA.US")
+        _load_stale_snapshot(tmp_path, db, [_row("GLTO.O", "Galecto Inc", "UNITED STATES")])
+        assert _resolved(db, "GLTO.US") == [("GLTO.US", None, "2026-10-01", "Galecto Inc")]
+        assert _resolved(db, "DMRA.US") == [("GLTO.US", "2026-03-10", "2026-10-01",
+                                             "Galecto Inc")]
+
+
+def test_resolved_view_follows_chained_renames_nearest_first(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "AAA.US", date(2025, 1, 1), new_code="BBB.US")
+        add_ticker_alias(db, "BBB.US", date(2026, 1, 1), new_code="CCC.US")
+        _load_stale_snapshot(tmp_path, db, [_row("AAA.O", "A Corp", "UNITED STATES")])
+        assert [r[0] for r in _resolved(db, "CCC.US")] == ["AAA.US"]
+
+
+def test_resolved_view_prefers_ig_listing_of_new_symbol(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "CUK.US", date(2026, 5, 7), new_code="CCL.US")
+        _load_stale_snapshot(tmp_path, db, [_row("CUK.N", "Carnival plc", "UNITED STATES"),
+                                            _row("CCL.N", "Carnival Corp", "UNITED STATES")])
+        assert [r[0] for r in _resolved(db, "CCL.US")] == ["CCL.US"]
+
+
+def test_resolved_view_ignores_rename_before_ig_file(tmp_path):
+    """IG's file postdates the rename, so its row under the old symbol is
+    some other (or a reused) listing, not the renamed stock."""
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "OLD.US", date(2023, 1, 1), new_code="NEW.US")
+        _load_stale_snapshot(tmp_path, db, [_row("OLD.O", "Old Corp", "UNITED STATES")])
+        assert _resolved(db, "NEW.US") == []
+
+
+def test_create_resolved_view_migrates_old_table(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        db.conn.execute("CREATE TABLE ig_margins (download_date TEXT, code TEXT, country TEXT, "
+                        "reuters TEXT, description TEXT, new_positions TEXT, shortable TEXT, "
+                        "guaranteed_stop_premium TEXT, borrow_rate TEXT, tier1_limit INTEGER, "
+                        "tier1_rate INTEGER, PRIMARY KEY (code, download_date))")
+        add_ticker_alias(db, "X.US", date(2026, 1, 1), new_code="Y.US")
+        create_resolved_view(db.conn)
+        assert db.conn.execute("SELECT COUNT(*) FROM ig_margins_resolved").fetchone() == (0,)

@@ -20,12 +20,16 @@ See doc/DESIGN_DECISIONS.md ("IG tiered margins") for the full design:
   unrelated tickers (not a genuine per-security overflow) -- tier1_limit/
   tier1_rate are set to NULL for these rather than "corrected".
 - ig_margins keeps history (PK (code, download_date)), not just the
-  latest snapshot.
+  latest snapshot. download_date is when we fetched the file;
+  source_modified is when IG last changed it (the server's Last-Modified,
+  kept by curl -R). The file hasn't changed since 2024-04-10.
+- ig_margins_resolved (a view) also finds a stock tipped under a new
+  symbol that IG's file still lists under its old one, via ticker_aliases.
 """
 import argparse
 import logging
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from subprocess import run
 
@@ -49,7 +53,7 @@ RAW_COLUMNS = [
 OUTPUT_COLUMNS = [
     "download_date", "code", "country", "reuters", "description",
     "new_positions", "shortable", "guaranteed_stop_premium", "borrow_rate",
-    "tier1_limit", "tier1_rate",
+    "tier1_limit", "tier1_rate", "source_modified",
 ]
 
 DDL = f"""
@@ -65,8 +69,45 @@ CREATE TABLE IF NOT EXISTS {TABLENAME} (
     borrow_rate TEXT,
     tier1_limit INTEGER,
     tier1_rate INTEGER,
+    source_modified TEXT,         -- when IG last changed the file
     PRIMARY KEY (code, download_date)
 )
+"""
+
+# Lookup by the symbol our tables use. Every ig_margins row appears under
+# its own code. A renamed stock whose IG row is still under the old symbol
+# (the file predates the rename) also appears under each later symbol from
+# ticker_aliases, nearest first; never when IG lists the new symbol itself.
+# Columns are IG's own: tier1_limit is a share count for ig_code, not
+# rescaled by an alias ratio.
+RESOLVED_VIEW = "ig_margins_resolved"
+_IG_COLS = ", ".join(f"m.{c}" for c in OUTPUT_COLUMNS if c != "code")
+RESOLVED_VIEW_DDL = f"""
+CREATE VIEW {RESOLVED_VIEW} AS
+WITH RECURSIVE later(code, ig_code, renamed_on, depth) AS (
+    SELECT new_code, old_code, effective_date, 1
+    FROM ticker_aliases WHERE new_code IS NOT NULL
+    UNION
+    SELECT a.new_code, l.ig_code, l.renamed_on, l.depth + 1
+    FROM later l JOIN ticker_aliases a ON a.old_code = l.code
+    WHERE a.new_code IS NOT NULL AND l.depth < 10
+),
+via_alias AS (
+    SELECT l.code, m.code AS ig_code, l.renamed_on, m.download_date,
+           ROW_NUMBER() OVER (PARTITION BY l.code, m.download_date
+                              ORDER BY l.depth) AS rn
+    FROM later l JOIN {TABLENAME} m ON m.code = l.ig_code
+    WHERE m.source_modified < l.renamed_on
+      AND NOT EXISTS (SELECT 1 FROM {TABLENAME} d
+                      WHERE d.code = l.code AND d.download_date = m.download_date)
+)
+SELECT m.code, m.code AS ig_code, NULL AS renamed_on, {_IG_COLS}
+FROM {TABLENAME} m
+UNION ALL
+SELECT v.code, v.ig_code, v.renamed_on, {_IG_COLS}
+FROM via_alias v JOIN {TABLENAME} m
+  ON m.code = v.ig_code AND m.download_date = v.download_date
+WHERE v.rn = 1
 """
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -81,10 +122,16 @@ def download_spreadsheet(out_path: Path) -> None:
         log.info("already have %s, not re-downloading", out_path)
         return
     log.info("downloading tiered margin spreadsheet to %s", out_path)
-    run(["curl", "-sL", TIERED_URL, "--output", str(out_path)], check=True)
+    # -R keeps the server's Last-Modified as the file's mtime (source_modified)
+    run(["curl", "-sLR", TIERED_URL, "--output", str(out_path)], check=True)
 
 
-def parse_tiered_spreadsheet(xlsx_path: Path, download_date: date) -> pd.DataFrame:
+def source_modified(xlsx_path: Path) -> date:
+    return datetime.fromtimestamp(xlsx_path.stat().st_mtime, timezone.utc).date()
+
+
+def parse_tiered_spreadsheet(xlsx_path: Path, download_date: date,
+                             modified: date | None = None) -> pd.DataFrame:
     """Parse the raw spreadsheet into the AU/US-only, cleaned shape that
     goes into ig_margins. Columns after the first 9 are IG's own further
     tiers (tier2, tier3, ...) -- out of scope, this table is deliberately
@@ -125,6 +172,7 @@ def parse_tiered_spreadsheet(xlsx_path: Path, download_date: date) -> pd.DataFra
     df.loc[is_sentinel, ["tier1_limit", "tier1_rate"]] = pd.NA
 
     df["download_date"] = download_date.isoformat()
+    df["source_modified"] = modified.isoformat() if modified else None
 
     return df[OUTPUT_COLUMNS].reset_index(drop=True)
 
@@ -134,6 +182,7 @@ def write_to_sqlite(df: pd.DataFrame, db: Database, tablename: str = TABLENAME) 
     same-day retry, and append-only month to month (ig_margins keeps
     history, unlike most of this project's other tables)."""
     db.conn.execute(DDL)
+    create_resolved_view(db.conn)
     clean = df.astype(object).where(df.notna(), None)
     cols = list(clean.columns)
     col_list = ", ".join(cols)
@@ -144,6 +193,17 @@ def write_to_sqlite(df: pd.DataFrame, db: Database, tablename: str = TABLENAME) 
         rows,
     )
     db.conn.commit()
+
+
+def create_resolved_view(conn) -> None:
+    """Add source_modified to an ig_margins created before it existed, and
+    (re)create ig_margins_resolved. Needs ticker_aliases to query the view."""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({TABLENAME})")}
+    if "source_modified" not in cols:
+        conn.execute(f"ALTER TABLE {TABLENAME} ADD COLUMN source_modified TEXT")
+    conn.execute(f"DROP VIEW IF EXISTS {RESOLVED_VIEW}")
+    conn.execute(RESOLVED_VIEW_DDL)
+    conn.commit()
 
 
 def main() -> None:
@@ -164,7 +224,7 @@ def main() -> None:
     download_spreadsheet(xlsx_path)
 
     with Database(args.db_path) as db:
-        margins = parse_tiered_spreadsheet(xlsx_path, today)
+        margins = parse_tiered_spreadsheet(xlsx_path, today, source_modified(xlsx_path))
         write_to_sqlite(margins, db)
         log.info("wrote %d AU/US margin row(s) for %s into %s", len(margins), today, TABLENAME)
 

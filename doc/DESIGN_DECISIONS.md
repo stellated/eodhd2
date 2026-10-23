@@ -1008,6 +1008,44 @@ constant at 20% across the whole 7-month span -- an early, if small,
 data point toward the "how much does this move month to month" question
 behind the decision to keep history at all (see above).
 
+### IG's file is frozen at 2024-04-10; ig_margins_resolved (2026-10-23)
+**Problem:** building `ig_margins_resolved` (look up IG's row for a renamed
+ticker) showed every snapshot in `ig_margins`, 2026-04-01 to 2026-10-12,
+is identical: same 8,884 rows, no value changed. The source file's
+Last-Modified is 2024-04-10 and the nebula archive's copies are
+byte-identical from 2024-05-01 on. So every row describes IG's offering in
+April 2024: renamed stocks appear only under their old symbols (GLTO, POAI,
+SATS...), and stocks taken over for cash in 2026 (APLS, SLNO, NUVL) are
+still listed as open for new positions. `download_date` is when we fetched
+the file, not when IG made it.
+
+**Decisions:**
+- **`source_modified`** (new column, from the server's Last-Modified via
+  `curl -R`): when IG last changed the file. All existing rows are
+  `2024-04-10`.
+- **The monthly download stops** until a live source is found (Ian is
+  asking IG): `eodhd-ig-margins.timer` disabled; each run only added
+  another copy of the same data.
+- **`ig_margins_resolved`** (a view, created by `create_resolved_view()` in
+  `scripts/get_ig_margins.py`): every `ig_margins` row under its own
+  `code`, plus, for a renamed stock IG still lists under its old symbol,
+  the same row under each later symbol in `ticker_aliases`. `ig_code` is
+  the symbol IG used, `renamed_on` the alias date (NULL for a direct row).
+  The planned design (follow aliases in force at each snapshot) was turned
+  round: it's the *new* symbol that IG's stale file can't find. An alias
+  only applies when the file predates the rename (`source_modified <
+  effective_date`); otherwise the old-symbol row is another or reused
+  listing. If IG lists the new symbol itself, that wins.
+- Values are IG's, unscaled: `tier1_limit` is a share count for `ig_code`
+  (IG's market pages give tiers in shares), not adjusted by an alias ratio.
+
+**Effect today:** 14 new symbols now resolve (DMRA->GLTO, ECHO->SATS...).
+No tip gains coverage, since every tip was under a symbol IG's file has:
+1,889 of 2,235 tipped tickers (85%) are in it either way. The view matters
+for later data (alphanume picks use current symbols) and for tips under
+new symbols. Only researched renames have aliases, so coverage for stocks
+renamed or listed since April 2024 is understated regardless.
+
 ---
 
 ## outcomes design (2026-10-07)
@@ -1833,7 +1871,7 @@ of the db plus a schema doc (the same pattern as `doc/OUTCOMES_SCHEMA.md`).
     the 5m feed goes empty before daily);
   - bars with no volume;
   - tickers EODHD has no intraday data for;
-  - unreliable 5m volume (`doc/LIMITATIONS.md` §6);
+  - unreliable 5m volume (`doc/LIMITATIONS.md` §7);
   - windows that were never fully fetched;
   - the remote-overwrite race `safe_push()` guards against.
 - **One EODHD key means one daily quota** (100,000 calls; intraday

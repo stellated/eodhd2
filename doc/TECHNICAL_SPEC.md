@@ -677,6 +677,15 @@ old "nebula" machine. See `doc/DESIGN_DECISIONS.md` ("IG tiered margins")
 for the full investigation behind both cleaning steps and the rest of the
 design.
 
+**The source file hasn't changed since 2024-04-10** (`source_modified`,
+the server's Last-Modified), so every snapshot is April 2024 data, and the
+monthly timer is disabled until a live source is found.
+`ig_margins_resolved` is the table to join on: every row under its own
+`code`, plus rows reachable from a later symbol via `ticker_aliases` when
+IG's file predates the rename (`ig_code` = IG's symbol, `renamed_on` = the
+alias date) -- see `doc/DESIGN_DECISIONS.md`, "IG's file is frozen at
+2024-04-10".
+
 ## Dependencies
 
 ```

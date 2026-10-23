@@ -49,7 +49,18 @@
   newsletter's rendering has changed in a way that would invalidate this
   estimate.
 
-## 6. EODHD 5m volume disagrees with daily volume
+## 6. IG margins are April 2024 data
+- IG's tiered-margin file was last changed on 2024-04-10
+  (`ig_margins.source_modified`); every monthly snapshot since is a copy.
+- Stocks renamed, listed or taken over since then are wrong or missing:
+  renames are only under the old symbol, cash takeovers still show as open
+  for new positions, and borrow rates and shortable flags are 2.5 years
+  old.
+- `ig_margins_resolved` finds a renamed stock's old IG row, but only for
+  renames in `ticker_aliases`. So IG coverage figures are understated for
+  recent listings and unresearched renames.
+
+## 7. EODHD 5m volume disagrees with daily volume
 - Prices in `intraday_5m` match `daily` (5m highs/lows equal the daily
   high/low), but volume often doesn't. Measured 2026-10-18 over 97,276
   ticker-days, as the sum of a day's regular-hours 5m volume over daily
