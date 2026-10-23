@@ -35,3 +35,6 @@ scripts/data/
 # alphanume trial units (host-specific paths), templates tracked as .example
 ops/eodhd-alphanume-live@.service
 ops/eodhd-alphanume-*.timer
+
+# editor swap files
+*.swp
