@@ -288,6 +288,10 @@ design") for the full rationale behind every column and the status enum.
   `_start_from_actual_dates()`. `tip_date`/`buy_date` count as day 0. This
   still counts every calendar day present regardless of real volume --
   window-closing is a question of elapsed time, not of execution.
+- Bars on/after a split inside the tip's window are converted into the
+  tip date's price terms first (`_splits_after()` reads the split from the
+  jump in daily `ac`/`cl`; `_split_adjust()` scales op/hi/lo/cl in memory;
+  stored bars stay unadjusted).
 - `_advance_position()` chains a position through multiple status
   transitions within one call (e.g. enter and exit within the same batch
   of new bars) via a `{status: checker}` dispatch table, so it never lags

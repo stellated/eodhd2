@@ -21,6 +21,8 @@ from src.eodhd_io import (
     _seed_new_outcomes,
     _sell_fields,
     _set_intraday_unavailable,
+    _split_adjust,
+    _splits_after,
     _time_exit_due,
     _zone_touched,
     pandas2sqlite,
@@ -666,7 +668,7 @@ def _seed_daily_bars(db: Database, code: str, rows: list[dict]) -> None:
         "datetime": pd.Timestamp(r["date"]),
         "date": r["date"],
         "op": r["op"], "hi": r["hi"], "lo": r["lo"], "cl": r["cl"],
-        "ac": r["cl"], "vo": r["vo"],
+        "ac": r.get("ac", r["cl"]), "vo": r["vo"],
     } for r in rows])
     pandas2sqlite(pdf, db.conn, "daily")
 
@@ -852,3 +854,91 @@ def test_update_outcomes_migration_tags_preexisting_resolved_rows_as_5m(tmp_path
     assert "fill_granularity" in cols
     assert "same_bar" in cols
     assert granularity == "5m"
+
+
+# --- split adjustment (CVNA 2026-04-28: a 5-for-1 read as a -8.43R stop) ---
+
+def _daily(d, cl, ac, vo=1000):
+    return {"timestamp": int(pd.Timestamp(d).timestamp()), "date": d,
+            "op": cl, "hi": cl, "lo": cl, "cl": cl, "ac": ac, "vo": vo}
+
+
+def test_splits_after_finds_forward_split(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "CVNA.US", [
+            _daily(date(2026, 5, 6), 389.38, 77.876),
+            _daily(date(2026, 5, 7), 400.02, 80.004),
+            _daily(date(2026, 5, 8), 77.94, 77.94),
+        ])
+        splits = _splits_after(db, "CVNA.US", date(2026, 4, 28))
+    assert [(d, round(f, 6)) for d, f in splits] == [(date(2026, 5, 8), 5.0)]
+
+
+def test_splits_after_finds_reverse_split(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "NVVE.US", [
+            _daily(date(2026, 7, 2), 0.32, 5.76),
+            _daily(date(2026, 7, 6), 4.89, 4.89),
+        ])
+        splits = _splits_after(db, "NVVE.US", date(2026, 7, 1))
+    assert [(d, round(f, 6)) for d, f in splits] == [(date(2026, 7, 6), round(1 / 18, 6))]
+
+
+def test_splits_after_ignores_ac_refetched_after_a_later_split(tmp_path):
+    """Rows fetched at different times can have ac on different bases (a
+    later split rewrote ac for one batch only); cl is continuous, so it's
+    not a split inside the window."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "AAA.US", [
+            _daily(date(2026, 1, 5), 100.0, 100.0),
+            _daily(date(2026, 1, 6), 101.0, 50.5),
+        ])
+        assert _splits_after(db, "AAA.US", date(2026, 1, 2)) == []
+
+
+def test_splits_after_ignores_dividends_and_splits_before_tip(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        _seed_daily_bars(db, "AAA.US", [
+            _daily(date(2026, 1, 2), 50.0, 25.0),
+            _daily(date(2026, 1, 5), 25.0, 25.0),   # 2-for-1 before the tip
+            _daily(date(2026, 1, 6), 24.5, 24.5),
+            _daily(date(2026, 1, 7), 24.0, 24.24),  # ~1% dividend
+        ])
+        assert _splits_after(db, "AAA.US", date(2026, 1, 5)) == []
+
+
+def test_split_adjust_scales_prices_from_split_date_only():
+    bars = _bars([
+        _bar(1, date(2026, 5, 7), "15:55:00", 400.0, 401.0, 399.0, 400.0, vo=10),
+        _bar(2, date(2026, 5, 8), "09:30:00", 81.0, 82.0, 80.0, 81.5, vo=20),
+    ])
+    out = _split_adjust(bars, [(date(2026, 5, 8), 5.0)])
+    assert out["cl"].to_list() == [400.0, 407.5]
+    assert out["lo"].to_list() == [399.0, 400.0]
+    assert out["vo"].to_list() == [10, 20]
+
+
+def test_update_outcomes_split_inside_window_is_not_a_stop(tmp_path):
+    """Bought at 10.5 (stop 9.0); a 2-for-1 next day halves the unadjusted
+    price to ~5.3. Adjusted it's ~10.6, so the position stays open and later
+    hits the 12.0 target (6.05 unadjusted)."""
+    with Database(tmp_path / "test.db") as db:
+        _seed_full_tip(db)
+        _seed_daily_bars(db, "AAA.US", [
+            _daily(date(2026, 1, 5), 10.6, 5.3),
+            _daily(date(2026, 1, 6), 5.3, 5.3),
+        ])
+        _seed_intraday_bars(db, "AAA.US", [
+            {"timestamp": 1, "local_date": date(2026, 1, 5), "local_time": "09:30:00",
+             "op": 10.8, "hi": 10.9, "lo": 10.4, "cl": 10.6, "vo": 1000},
+            {"timestamp": 2, "local_date": date(2026, 1, 6), "local_time": "09:30:00",
+             "op": 5.3, "hi": 5.35, "lo": 5.25, "cl": 5.3, "vo": 1000},
+            {"timestamp": 3, "local_date": date(2026, 1, 6), "local_time": "09:35:00",
+             "op": 5.3, "hi": 6.05, "lo": 5.3, "cl": 6.0, "vo": 1000},
+        ])
+        update_outcomes(db)
+        row = db.conn.execute(
+            "SELECT status, buy_trigger_price, sell_trigger_price FROM outcomes "
+            "WHERE code = 'AAA.US' AND tip_date = '2026-01-05'"
+        ).fetchone()
+    assert row == ("closed_target", 10.5, 12.0)

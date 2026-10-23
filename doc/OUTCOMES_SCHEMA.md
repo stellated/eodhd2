@@ -51,7 +51,12 @@ Everything is simulated from 5-minute bars (`intraday_5m`).
 | `same_bar` | TEXT | Set when one bar touched more than one trigger level; see "Same-bar events". NULL otherwise. |
 
 Prices are in the security's trading currency (USD), unadjusted, as EODHD's
-intraday feed provides them.
+intraday feed provides them, except across a split (or spin-off) inside the
+tip's window: bars after it are converted into the tip date's price terms,
+so the newsletter's levels still apply and every price in the row is on
+the same basis as the tip (e.g. CVNA 2026-04-28 `sell_price` 364.51 is
+72.90 after its 5-for-1). See `doc/DESIGN_DECISIONS.md`, "Splits inside a
+tip's window".
 
 ## Status values
 

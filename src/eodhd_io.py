@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import pathlib
 import re
 import shutil
@@ -1822,6 +1823,61 @@ def _reopen_daily_resolved_with_intraday(db: "Database", tablename: str) -> None
     db.conn.commit()
 
 
+SPLIT_MIN_JUMP = 1.25  # ac/cl ratio change (either way) that counts as a split
+
+
+def _splits_after(db: "Database", code: str, tip_date: date) -> list[tuple[date, float]]:
+    """Splits in `code`'s daily bars after tip_date, as (first post-split
+    date, factor), where factor converts a post-split price into the
+    pre-split terms the tip's levels are quoted in (5.0 for CVNA's 5-for-1
+    on 2026-05-08, 1/18 for NVVE's 1-for-18 on 2026-07-06).
+
+    Read from the jump in ac/cl between consecutive daily rows: EODHD's
+    op/hi/lo/cl (and intraday) are unadjusted, ac is split-adjusted, so
+    ac/cl is flat except across a split or dividend. A jump counts only if
+    the unadjusted close moved more than the adjusted one: ac values
+    fetched at different times (before and after a later split) can also
+    jump, but there cl is continuous. Dividends move ac/cl by far less than
+    SPLIT_MIN_JUMP and are ignored. No API calls; nothing found if `daily`
+    has no rows for the window.
+    """
+    if not db._table_exists("daily"):
+        return []
+    rows = db.conn.execute(
+        "SELECT date, cl, ac FROM daily WHERE code = ? AND date >= ? "
+        "AND cl > 0 AND ac > 0 ORDER BY date",
+        (code, (tip_date - timedelta(days=10)).isoformat()),
+    ).fetchall()
+    splits = []
+    for (_, pcl, pac), (d, cl, ac) in zip(rows, rows[1:]):
+        factor = (ac / cl) / (pac / pcl)
+        if not (1 / SPLIT_MIN_JUMP < factor < SPLIT_MIN_JUMP) \
+                and abs(math.log(cl / pcl)) > abs(math.log(ac / pac)):
+            d = date.fromisoformat(d)
+            if d > tip_date:
+                splits.append((d, factor))
+            elif d == tip_date:
+                logging.warning(
+                    f"{code} {tip_date}: split effective on the tip date itself "
+                    f"(factor {factor:.4g}); not adjusting, check the tip's levels."
+                )
+    return splits
+
+
+def _split_adjust(bars: pl.DataFrame, splits: list[tuple[date, float]]) -> pl.DataFrame:
+    """Bars with prices on/after each split converted into pre-split terms,
+    so a split inside a tip's window can't read as a target or stop (CVNA
+    2026-04-28 was stopped out at -8.43R by its 5-for-1). Volume is left
+    alone. In memory only: stored bars stay unadjusted."""
+    for split_date, factor in splits:
+        on_after = pl.col("local_date") >= split_date
+        bars = bars.with_columns(
+            [pl.when(on_after).then(pl.col(c) * factor).otherwise(pl.col(c)).alias(c)
+             for c in ("op", "hi", "lo", "cl")]
+        )
+    return bars
+
+
 def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
     """Recompute every non-terminal outcomes row against whatever price
     data is currently available. Seeds a new 'pending' row for every tip
@@ -1871,6 +1927,10 @@ def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
             )
             if bars.is_empty():
                 continue
+            splits = _splits_after(db, pos["code"], tip["tip_date"])
+            if splits:
+                logging.info(f"{pos['code']} {pos['tip_date']}: split-adjusting bars {splits}")
+                bars = _split_adjust(bars, splits)
             new_pos = _advance_position({**pos, "fill_granularity": granularity}, bars, tip)
             if new_pos != pos:
                 _write_position(db, tablename, new_pos)

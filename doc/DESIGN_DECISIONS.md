@@ -1590,6 +1590,48 @@ cash-out time-exits at its last real close, at or near the deal price.
 The old objection (no real 5m price path exists) still holds, which is why
 the bars carry no volume rather than pretending to be trades.
 
+### Splits inside a tip's window (2026-10-23)
+**Problem:** EODHD's daily `op`/`hi`/`lo`/`cl` and all intraday bars are
+unadjusted for splits; only daily `ac` is adjusted (checked on NVVE's
+1-for-18, 2026-07-06: close 0.32 then open 5.97; `ac` 5.76 = 0.32 x 18).
+The tip's entry zone, target and stop are in pre-split prices, so a split
+inside the window looks like a crash (forward split, a false stop) or a
+surge (reverse split, a false target). Scanning production for splits
+inside tip windows found one: CVNA 2026-04-28, bought at 403, 5-for-1 on
+2026-05-08, recorded `closed_stop` at -8.43R on the 81 post-split open, the
+worst row in the table. Aliases can't express this (same symbol).
+
+**Decision:** `update_outcomes()` converts bars on/after a split into
+pre-split terms in memory before the triggers see them
+(`_splits_after()`, `_split_adjust()`). Ian's option (a), "adjust the tip's
+levels", rather than rescaling stored bars; scaling the bars by the factor
+is the same as dividing the levels by it, and keeps every checker
+unchanged. Stored bars stay unadjusted. The split is read from the jump in
+daily `ac`/`cl` between consecutive rows, so no API calls:
+- only a jump of more than `SPLIT_MIN_JUMP` (1.25x either way) counts, so
+  dividends are ignored;
+- the unadjusted close must move more than the adjusted one. `ac` rows
+  fetched at different times can sit on different bases after a later
+  split, which also jumps `ac`/`cl`, but there `cl` is continuous;
+- a split dated on the tip date itself isn't adjusted (it's unclear which
+  basis the newsletter quoted) and is logged as a warning.
+
+Outcome prices (`buy_price`, `sell_price` etc.) are therefore in the tip
+date's price terms: CVNA's `sell_price` is 364.51, i.e. 72.90 x 5.
+
+**Spin-offs also qualify:** ATRO (1.25x, 2026-06-15) and REZI (1.44x,
+2026-08-04) are adjusted the same way. That's the right reading for a
+holder (the value lost from the share price is held in the spun-off
+shares), and neither outcome changed.
+
+**Verification:** a full rebuild on a copy of production changed 4 of 5,293
+rows. CVNA went to `closed_stop` at -1.01R on 05-13 (low 72.97 x 5 is
+below the 364.87 stop). The other three weren't split-related: CBZ
+2026-08-07, CRSR 2026-08-10 and LB 2026-08-11 were terminal rows decided
+before their 5m windows were completed (the 2026-08-05..19 gap), which is
+never revisited once a row is terminal. All four were recomputed in
+production; closed trades 4,388 -> 4,390, total R -213.4 -> -206.1.
+
 ---
 
 ## tips_io design
