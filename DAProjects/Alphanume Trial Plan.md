@@ -24,6 +24,13 @@ York; EDT, UTC-4, until US clocks change on 1 November).
 - **Nothing is reachable without a key:** every endpoint returned "API key
   required" when probed, so no schema or history depth can be checked
   before the trial.
+- **Alphanume's reply (Earl, founding partner, 2026-10-23):** "move at your
+  own pace and test out the data for as long as you need"; "for a lot of
+  our endpoints you can get the full history in 1-3 calls"; "most of our
+  coverage is in event-driven catalysts, so the starting date for most
+  will be around 2024". It doesn't answer the two other questions: whether
+  data may be kept without subscribing, and whether one request a second
+  is acceptable.
 - **History depths are mostly not published.** Known: Lockup Expirations
   from 2021; Reverse Splits' market cap unavailable before 2024; Short
   Locates only from 2026-10-08. Optionable Tickers is a monthly snapshot
