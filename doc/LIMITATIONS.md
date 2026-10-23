@@ -50,14 +50,12 @@
   estimate.
 
 ## 6. IG margins: no point-in-time history before 2026-10-23
-- Every `ig_margins` snapshot before 2026-10-23 is a copy of a file IG last
-  changed on 2024-04-10 (`source_modified`): stocks renamed, listed or
-  taken over since are wrong or missing there (cash takeovers still show
-  as open, borrow rates are 2.5 years old). Snapshots from 2026-10-23 on
-  come from IG's current file.
+- IG keeps no past versions, so `ig_margins` has only the snapshots we
+  could recover, with gaps of 21 months (2022-01 to 2023-08) and 18 months
+  (2024-04 to 2025-10).
 - Real snapshots (by `source_modified`): 2022-01-17, monthly 2023-08-21
-  to 2024-04-10, 2025-10-06, then 2026-10-23 on. Pick by
-  `source_modified`, not `download_date`.
+  to 2024-04-10, 2025-10-06, then 2026-10-22 on (`source_modified` is
+  when IG generated the file; `download_date` when we got it).
 - So there's no IG data as of a 2026 tip's own date. The 2024 file is too old
   for recent listings; the current one omits stocks delisted since the
   tip (survivorship), and borrow rates and shortable flags change over

@@ -1073,9 +1073,18 @@ could find, each with `source_modified` taken from the file's own
 
 The Wayback Machine has nothing else for the AU retail file or the stock
 deal settings PDF. Its 2025-10-08 "Tiered Margin Australia.xlsx" has
-Professional-level margins (5-10%) and was skipped. The 2026-04-01 to
-2026-10-12 snapshots are still copies of the 2024-04-10 file (see
-`source_modified`).
+Professional-level margins (5-10%) and was skipped.
+
+**Stale copies removed (Ian: "when I select distinct download_date, I want
+to see the truth"):** the 2026-04-01 to 2026-10-12 snapshots (62,188 rows,
+all the 2024-04-10 file again) were deleted, as were the archive's 28
+byte-identical copies from 2024-06-01 to 2026-10-01 and the 2026-05-01
+error page; 2024-05-01 keeps that version under its real date.
+`source_modified` is now the workbook's own created time (when IG
+generated it) rather than the CDN's Last-Modified, which for the
+2026-10-23 download was 19 hours later. A run that finds a version
+already loaded (`already_loaded()`) writes nothing and deletes the
+download so it isn't archived either.
 
 ---
 

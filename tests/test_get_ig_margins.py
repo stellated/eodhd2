@@ -1,12 +1,16 @@
+import os
+import zipfile
 from datetime import date
 
 import pandas as pd
 
 from scripts.get_ig_margins import (
     RAW_COLUMNS,
+    already_loaded,
     create_resolved_view,
     download_spreadsheet,
     parse_tiered_spreadsheet,
+    source_modified,
     write_to_sqlite,
 )
 from src.eodhd_io import Database, add_ticker_alias
@@ -309,3 +313,28 @@ def test_parse_keeps_plain_ric_when_two_share_a_code(tmp_path):
     df = parse_tiered_spreadsheet(xlsx, date(2026, 10, 23))
 
     assert df[["code", "reuters"]].values.tolist() == [["WBCPJ.AU", "WBCPJ.AX"]]
+
+
+def test_source_modified_reads_workbook_created_time(tmp_path):
+    xlsx = tmp_path / "tiered.xlsx"
+    with zipfile.ZipFile(xlsx, "w") as z:
+        z.writestr("docProps/core.xml",
+                   '<cp:coreProperties xmlns:dcterms="http://purl.org/dc/terms/">'
+                   '<dcterms:created xsi:type="dcterms:W3CDTF">2026-10-22T23:02:13Z'
+                   '</dcterms:created></cp:coreProperties>')
+    assert source_modified(xlsx) == date(2026, 10, 22)
+
+
+def test_source_modified_falls_back_to_mtime(tmp_path):
+    f = tmp_path / "not_a_zip.xlsx"
+    f.write_bytes(b"<html>error</html>")
+    os.utime(f, (1712790000, 1712790000))  # 2024-04-10 23:00 UTC
+    assert source_modified(f) == date(2024, 4, 10)
+
+
+def test_already_loaded_finds_same_file_version(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        assert already_loaded(db, date(2024, 4, 10)) is None
+        _load_stale_snapshot(tmp_path, db, [_row("BHP.AX", "BHP Group", "AUSTRALIA")])
+        assert already_loaded(db, date(2024, 4, 10)) == "2026-10-01"
+        assert already_loaded(db, date(2026, 10, 22)) is None

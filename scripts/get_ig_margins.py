@@ -29,10 +29,13 @@ See doc/DESIGN_DECISIONS.md ("IG tiered margins") for the full design:
 """
 import argparse
 import logging
+import re
 import sys
+import zipfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 from subprocess import run
+from typing import Optional
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -165,7 +168,28 @@ def download_spreadsheet(out_path: Path) -> None:
 
 
 def source_modified(xlsx_path: Path) -> date:
-    return datetime.fromtimestamp(xlsx_path.stat().st_mtime, timezone.utc).date()
+    """The UTC date IG generated the file: the workbook's own created time
+    (docProps/core.xml), which IG sets each time it regenerates the file
+    (about 23:00 UTC). Falls back to the file's mtime -- the server's
+    Last-Modified, via curl -R -- which on IG's CDN can be hours later."""
+    try:
+        core = zipfile.ZipFile(xlsx_path).read("docProps/core.xml").decode()
+        created = re.search(r"<dcterms:created[^>]*>([^<]+)<", core).group(1)
+        return datetime.fromisoformat(created.replace("Z", "+00:00")).date()
+    except (KeyError, AttributeError, ValueError, zipfile.BadZipFile):
+        return datetime.fromtimestamp(xlsx_path.stat().st_mtime, timezone.utc).date()
+
+
+def already_loaded(db: Database, modified: date, tablename: str = TABLENAME) -> Optional[str]:
+    """download_date of a snapshot already loaded from the same version of
+    IG's file, if any. Loading it again would add a copy of old data under
+    a new date (the 2024-04-10 file sat under 2026 dates until 2026-10-23)."""
+    db.conn.execute(DDL)
+    create_resolved_view(db.conn)
+    row = db.conn.execute(
+        f"SELECT MIN(download_date) FROM {tablename} WHERE source_modified = ?",  # noqa: S608
+        (modified.isoformat(),)).fetchone()
+    return row[0]
 
 
 def parse_tiered_spreadsheet(xlsx_path: Path, download_date: date,
@@ -272,10 +296,18 @@ def main() -> None:
     xlsx_path = args.xlsx_dir / f"tiered.{today.isoformat()}.xlsx"
     download_spreadsheet(xlsx_path)
 
+    modified = source_modified(xlsx_path)
     with Database(args.db_path) as db:
-        margins = parse_tiered_spreadsheet(xlsx_path, today, source_modified(xlsx_path))
+        if (loaded := already_loaded(db, modified)):
+            # Deleting the file also keeps the wrapper from archiving a copy.
+            log.warning("IG's file is still the version generated %s (loaded as %s): "
+                        "nothing written", modified, loaded)
+            xlsx_path.unlink()
+            return
+        margins = parse_tiered_spreadsheet(xlsx_path, today, modified)
         write_to_sqlite(margins, db)
-        log.info("wrote %d AU/US margin row(s) for %s into %s", len(margins), today, TABLENAME)
+        log.info("wrote %d AU/US margin row(s) for %s (generated %s) into %s",
+                 len(margins), today, modified, TABLENAME)
 
 
 if __name__ == "__main__":

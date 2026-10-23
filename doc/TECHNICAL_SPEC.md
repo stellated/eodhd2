@@ -677,9 +677,11 @@ old "nebula" machine. See `doc/DESIGN_DECISIONS.md` ("IG tiered margins")
 for the full investigation behind both cleaning steps and the rest of the
 design.
 
-**`source_modified`** is when IG last changed the file (the server's
-Last-Modified). Every snapshot before 2026-10-23 came from an old copy
-frozen at 2024-04-10; `TIERED_URL` now points at IG's own, current copy.
+**`source_modified`** is when IG generated the file (the workbook's own
+created time). Snapshots: 2022-01-17 and 2025-10-07 (Wayback captures),
+monthly 2023-08-22 to 2024-05-01 (the old copy then froze at 2024-04-10),
+and from 2026-10-23 IG's own, current copy (`TIERED_URL`). A run that
+finds a version already loaded writes nothing.
 `ig_margins_resolved` is the table to join on: per snapshot, a symbol
 finds IG's row under that symbol, or via `ticker_aliases` the row under
 an older symbol (file predates the rename) or a newer one (file postdates

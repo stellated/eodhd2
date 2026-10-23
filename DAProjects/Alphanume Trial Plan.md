@@ -179,10 +179,10 @@ Reverse Splits and Dilutive S-1. Each gets:
   volume, padded vo=0 rows, unadjusted prices, ticker aliases), and the
   result of the live-vs-history check for its dataset.
 - **IG coverage** through `ig_margins_resolved` (built 2026-10-23), which
-  follows renamed tickers. Caveats (`doc/LIMITATIONS.md` §6): IG data
-  is current only from 2026-10-23 (earlier snapshots are a 2024 file), so
-  there's no IG data as of a pick's own date; and only researched renames
-  have aliases.
+  follows renamed tickers. Caveats (`doc/LIMITATIONS.md` §6): IG keeps
+  no history, so the snapshots are 2022-01, monthly 2023-08 to 2024-04,
+  2025-10 and monthly from 2026-10; a pick is matched to the nearest one,
+  not to its own date; and only researched renames have aliases.
 - **A README** with Ian's main question and data list from
   `Alphanume Trading Strategies.md`.
 
