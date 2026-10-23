@@ -192,7 +192,7 @@ def test_download_spreadsheet_curls_when_missing(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     args, kwargs = calls[0]
-    assert str(out_path) in args[0] and "-sLR" in args[0]
+    assert str(out_path) in args[0] and "-fsSLR" in args[0]
     assert kwargs.get("check") is True
 
 
@@ -259,3 +259,41 @@ def test_create_resolved_view_migrates_old_table(tmp_path):
         add_ticker_alias(db, "X.US", date(2026, 1, 1), new_code="Y.US")
         create_resolved_view(db.conn)
         assert db.conn.execute("SELECT COUNT(*) FROM ig_margins_resolved").fetchone() == (0,)
+
+
+def test_parse_keeps_fractional_tier1_rate(tmp_path):
+    xlsx = tmp_path / "tiered.xlsx"
+    _write_fixture_xlsx(xlsx, [_row("BHP.AX", "BHP Group", "AUSTRALIA", tier1_rate="30.8%")])
+
+    df = parse_tiered_spreadsheet(xlsx, date(2026, 10, 23))
+
+    assert df.iloc[0]["tier1_rate"] == 30.8
+
+
+def _load_current_snapshot(tmp_path, db, rows):
+    """A file IG changed on 2026-10-23, downloaded the same day."""
+    xlsx = tmp_path / "tiered_current.xlsx"
+    _write_fixture_xlsx(xlsx, rows)
+    write_to_sqlite(parse_tiered_spreadsheet(xlsx, date(2026, 10, 23), date(2026, 10, 23)), db)
+
+
+def test_resolved_view_maps_old_symbol_forward_and_drops_reused_listing(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "SATS.US", date(2026, 6, 24), new_code="ECHO.US")
+        _load_stale_snapshot(tmp_path, db, [_row("SATS.O", "EchoStar Corp", "UNITED STATES")])
+        _load_current_snapshot(tmp_path, db, [_row("SATS.O", "Strive Inc", "UNITED STATES"),
+                                              _row("ECHO.O", "EchoStar Corp", "UNITED STATES")])
+        assert _resolved(db, "SATS.US") == [
+            ("SATS.US", None, "2026-10-01", "EchoStar Corp"),
+            ("ECHO.US", "2026-06-24", "2026-10-23", "EchoStar Corp")]
+        assert _resolved(db, "ECHO.US") == [
+            ("SATS.US", "2026-06-24", "2026-10-01", "EchoStar Corp"),
+            ("ECHO.US", None, "2026-10-23", "EchoStar Corp")]
+
+
+def test_resolved_view_drops_cashed_out_symbol_after_takeover(tmp_path):
+    with Database(tmp_path / "test.db") as db:
+        add_ticker_alias(db, "APLS.US", date(2026, 5, 14), cash_price=41.03)
+        _load_stale_snapshot(tmp_path, db, [_row("APLS.O", "Apellis", "UNITED STATES")])
+        _load_current_snapshot(tmp_path, db, [_row("APLS.O", "Someone else", "UNITED STATES")])
+        assert [r[2] for r in _resolved(db, "APLS.US")] == ["2026-10-01"]

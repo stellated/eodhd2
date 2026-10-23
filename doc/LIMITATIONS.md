@@ -49,16 +49,18 @@
   newsletter's rendering has changed in a way that would invalidate this
   estimate.
 
-## 6. IG margins are April 2024 data
-- IG's tiered-margin file was last changed on 2024-04-10
-  (`ig_margins.source_modified`); every monthly snapshot since is a copy.
-- Stocks renamed, listed or taken over since then are wrong or missing:
-  renames are only under the old symbol, cash takeovers still show as open
-  for new positions, and borrow rates and shortable flags are 2.5 years
-  old.
-- `ig_margins_resolved` finds a renamed stock's old IG row, but only for
-  renames in `ticker_aliases`. So IG coverage figures are understated for
-  recent listings and unresearched renames.
+## 6. IG margins: no point-in-time history before 2026-10-23
+- Every `ig_margins` snapshot before 2026-10-23 is a copy of a file IG last
+  changed on 2024-04-10 (`source_modified`): stocks renamed, listed or
+  taken over since are wrong or missing there (cash takeovers still show
+  as open, borrow rates are 2.5 years old). Snapshots from 2026-10-23 on
+  come from IG's current file.
+- So there's no IG data as of a tip's own date. The 2024 file is too old
+  for recent listings; the current one omits stocks delisted since the
+  tip (survivorship), and borrow rates and shortable flags change over
+  time.
+- `ig_margins_resolved` follows renames both ways, but only those in
+  `ticker_aliases`, so coverage is understated for unresearched renames.
 
 ## 7. EODHD 5m volume disagrees with daily volume
 - Prices in `intraday_5m` match `daily` (5m highs/lows equal the daily

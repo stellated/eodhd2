@@ -1008,43 +1008,56 @@ constant at 20% across the whole 7-month span -- an early, if small,
 data point toward the "how much does this move month to month" question
 behind the decision to keep history at all (see above).
 
-### IG's file is frozen at 2024-04-10; ig_margins_resolved (2026-10-23)
+### IG's old file was frozen at 2024-04-10; new source; ig_margins_resolved (2026-10-23)
 **Problem:** building `ig_margins_resolved` (look up IG's row for a renamed
 ticker) showed every snapshot in `ig_margins`, 2026-04-01 to 2026-10-12,
-is identical: same 8,884 rows, no value changed. The source file's
-Last-Modified is 2024-04-10 and the nebula archive's copies are
+is identical: same 8,884 rows, no value changed. The marketdatasystems.com
+file's Last-Modified is 2024-04-10 and the nebula archive's copies are
 byte-identical from 2024-05-01 on. So every row describes IG's offering in
 April 2024: renamed stocks appear only under their old symbols (GLTO, POAI,
 SATS...), and stocks taken over for cash in 2026 (APLS, SLNO, NUVL) are
 still listed as open for new positions. `download_date` is when we fetched
 the file, not when IG made it.
 
+**New source:** IG's help article "What are IG's shares and ETFs CFD
+product details" links its own copy (`TIERED_URL`), which is current
+(Last-Modified 2026-10-23, the day it was found) and parses with the same
+code. IG's CDN returns 403 without a browser User-Agent, so `curl` sends
+one. Differences found: renames are under the new symbols (DMRA, AGPU,
+ECHO), cash takeovers are gone, borrow rates mostly 0.8% (0.9% before),
+8,213 AU/US rows (8,884), no caret, sentinel or ERROR rows, and a
+fractional `tier1_rate` (30.8%), so that column is now REAL. The
+monthly timer stays on.
+
 **Decisions:**
 - **`source_modified`** (new column, from the server's Last-Modified via
-  `curl -R`): when IG last changed the file. All existing rows are
-  `2024-04-10`.
-- **The monthly download stops** until a live source is found (Ian is
-  asking IG): `eodhd-ig-margins.timer` disabled; each run only added
-  another copy of the same data.
+  `curl -R`): when IG last changed the file. Every row from the old source
+  is `2024-04-10`. `curl -f` also stops an HTTP error page being saved as
+  the spreadsheet (May 2026's archived file is one).
 - **`ig_margins_resolved`** (a view, created by `create_resolved_view()` in
-  `scripts/get_ig_margins.py`): every `ig_margins` row under its own
-  `code`, plus, for a renamed stock IG still lists under its old symbol,
-  the same row under each later symbol in `ticker_aliases`. `ig_code` is
-  the symbol IG used, `renamed_on` the alias date (NULL for a direct row).
-  The planned design (follow aliases in force at each snapshot) was turned
-  round: it's the *new* symbol that IG's stale file can't find. An alias
-  only applies when the file predates the rename (`source_modified <
-  effective_date`); otherwise the old-symbol row is another or reused
-  listing. If IG lists the new symbol itself, that wins.
+  `scripts/get_ig_margins.py`), looked up by the symbol our tables use,
+  per snapshot. Which way an alias is followed depends on whether IG's
+  file predates the rename (`source_modified < effective_date`):
+  - predates it: the new symbol finds IG's old-symbol row (DMRA -> GLTO in
+    the 2024 file);
+  - postdates it: the old symbol finds the new-symbol row (SATS -> ECHO),
+    and IG's row under the old symbol is dropped, since it's another or a
+    reused listing: SATS is "Strive Inc 15 PERP" in the 2026-10-23 file. A
+    cash-out alias drops the old-symbol row with nothing in its place.
+
+  A row IG lists under the symbol itself wins over both. `ig_code` is the
+  symbol IG used, `renamed_on` the alias date (NULL for a direct row).
 - Values are IG's, unscaled: `tier1_limit` is a share count for `ig_code`
   (IG's market pages give tiers in shares), not adjusted by an alias ratio.
 
-**Effect today:** 14 new symbols now resolve (DMRA->GLTO, ECHO->SATS...).
-No tip gains coverage, since every tip was under a symbol IG's file has:
-1,889 of 2,235 tipped tickers (85%) are in it either way. The view matters
-for later data (alphanume picks use current symbols) and for tips under
-new symbols. Only researched renames have aliases, so coverage for stocks
-renamed or listed since April 2024 is understated regardless.
+**Effect, tested on a copy of production with the 2026-10-23 file loaded:**
+in the 2024 snapshots 14 new symbols resolve backwards; in the current one
+20 old symbols resolve forwards (all 27 aliases except the 3 cash-outs and
+4 whose successors IG doesn't list). Tipped tickers found: 1,889 of 2,235
+in the 2024 file, 1,773 in the current one (1,754 without the view).
+Neither is a fair historical coverage figure: the 2024 file is too old
+for recent listings, and the current one omits stocks delisted since
+their tip (survivorship). Only researched renames have aliases.
 
 ---
 

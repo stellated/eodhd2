@@ -141,7 +141,7 @@ weekday morning, e.g. Wednesday 4 November.
    - tickers EODHD doesn't know (a measure of how much rename and
      delisting work each project faces), and the EODHD call and storage
      estimate: both from `eodhd_budget.py`;
-   - IG coverage via `ig_margins_resolved` (April 2024 data, see the
+   - IG coverage via `ig_margins_resolved` (current file, see the
      handover caveat): what share of picks are tradeable, and
      for the short projects shortable, and at what borrow rate.
 3. A first look at each dataset's own outcome fields (they publish
@@ -179,10 +179,10 @@ Reverse Splits and Dilutive S-1. Each gets:
   volume, padded vo=0 rows, unadjusted prices, ticker aliases), and the
   result of the live-vs-history check for its dataset.
 - **IG coverage** through `ig_margins_resolved` (built 2026-10-23), which
-  finds a renamed stock's old IG row. Caveats: IG's file is April 2024
-  data (`doc/LIMITATIONS.md` §6), and only researched renames have aliases,
-  so coverage of anything listed or renamed since is understated until a
-  current IG source is found (Ian is asking IG).
+  follows renamed tickers. Caveats (`doc/LIMITATIONS.md` §6): IG data
+  is current only from 2026-10-23 (earlier snapshots are a 2024 file), so
+  there's no IG data as of a pick's own date; and only researched renames
+  have aliases.
 - **A README** with Ian's main question and data list from
   `Alphanume Trading Strategies.md`.
 

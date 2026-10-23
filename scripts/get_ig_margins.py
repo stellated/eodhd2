@@ -22,7 +22,8 @@ See doc/DESIGN_DECISIONS.md ("IG tiered margins") for the full design:
 - ig_margins keeps history (PK (code, download_date)), not just the
   latest snapshot. download_date is when we fetched the file;
   source_modified is when IG last changed it (the server's Last-Modified,
-  kept by curl -R). The file hasn't changed since 2024-04-10.
+  kept by curl -R). The old marketdatasystems.com copy stopped changing
+  on 2024-04-10; IG's own copy (TIERED_URL since 2026-10-23) is current.
 - ig_margins_resolved (a view) also finds a stock tipped under a new
   symbol that IG's file still lists under its old one, via ticker_aliases.
 """
@@ -41,7 +42,12 @@ sys.path.insert(0, str(SRC_DIR))
 
 from eodhd_io import Database  # noqa: E402
 
-TIERED_URL = "https://www.marketdatasystems.com/content/files/Tiered%20Margin%20Australia%20%28Retail%29.xlsx"
+# Linked from IG's "Shares and ETFs CFD product details" help article. IG's
+# CDN refuses (403) a request without a browser User-Agent.
+TIERED_URL = ("https://www.ig.com/content/dam/publicsites/go-anywhere-files/"
+              "Tiered%20Margin%20Australia%20%28Retail%29.xlsx")
+USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
 TABLENAME = "ig_margins"
 COUNTRY_SUFFIX = {"AUSTRALIA": "AU", "UNITED STATES": "US"}
 
@@ -68,23 +74,32 @@ CREATE TABLE IF NOT EXISTS {TABLENAME} (
     guaranteed_stop_premium TEXT,
     borrow_rate TEXT,
     tier1_limit INTEGER,
-    tier1_rate INTEGER,
+    tier1_rate REAL,              -- percent; IG uses e.g. 30.8
     source_modified TEXT,         -- when IG last changed the file
     PRIMARY KEY (code, download_date)
 )
 """
 
-# Lookup by the symbol our tables use. Every ig_margins row appears under
-# its own code. A renamed stock whose IG row is still under the old symbol
-# (the file predates the rename) also appears under each later symbol from
-# ticker_aliases, nearest first; never when IG lists the new symbol itself.
-# Columns are IG's own: tier1_limit is a share count for ig_code, not
-# rescaled by an alias ratio.
+# Lookup by the symbol our tables use, per snapshot, via ticker_aliases.
+# What IG's file lists depends on whether it predates a rename
+# (source_modified < effective_date):
+# - predates it: IG still has the old symbol, so the new symbol finds the
+#   old-symbol row ("back"; e.g. DMRA -> GLTO in the 2024 file);
+# - postdates it: IG has the new symbol, so the old symbol finds the
+#   new-symbol row ("forward"; e.g. SATS -> ECHO), and IG's row under the
+#   old symbol is dropped -- it's another or a reused listing (SATS is
+#   "Strive Inc 15 PERP" in the 2026-10-23 file). A cash-out alias also
+#   drops the old-symbol row, with nothing in its place.
+# A row IG lists under the symbol itself wins over either. ig_code is the
+# symbol IG used; renamed_on the alias date (NULL for a direct row). Values
+# are IG's own: tier1_limit is a share count for ig_code, not rescaled by
+# an alias ratio.
 RESOLVED_VIEW = "ig_margins_resolved"
 _IG_COLS = ", ".join(f"m.{c}" for c in OUTPUT_COLUMNS if c != "code")
 RESOLVED_VIEW_DDL = f"""
 CREATE VIEW {RESOLVED_VIEW} AS
-WITH RECURSIVE later(code, ig_code, renamed_on, depth) AS (
+WITH RECURSIVE
+later(code, ig_code, renamed_on, depth) AS (     -- new symbol -> older ones
     SELECT new_code, old_code, effective_date, 1
     FROM ticker_aliases WHERE new_code IS NOT NULL
     UNION
@@ -92,22 +107,43 @@ WITH RECURSIVE later(code, ig_code, renamed_on, depth) AS (
     FROM later l JOIN ticker_aliases a ON a.old_code = l.code
     WHERE a.new_code IS NOT NULL AND l.depth < 10
 ),
-via_alias AS (
-    SELECT l.code, m.code AS ig_code, l.renamed_on, m.download_date,
-           ROW_NUMBER() OVER (PARTITION BY l.code, m.download_date
-                              ORDER BY l.depth) AS rn
-    FROM later l JOIN {TABLENAME} m ON m.code = l.ig_code
-    WHERE m.source_modified < l.renamed_on
-      AND NOT EXISTS (SELECT 1 FROM {TABLENAME} d
-                      WHERE d.code = l.code AND d.download_date = m.download_date)
+earlier(code, ig_code, renamed_on, depth) AS (   -- old symbol -> newer ones
+    SELECT old_code, new_code, effective_date, 1
+    FROM ticker_aliases WHERE new_code IS NOT NULL
+    UNION
+    SELECT e.code, a.new_code, MAX(e.renamed_on, a.effective_date), e.depth + 1
+    FROM earlier e JOIN ticker_aliases a ON a.old_code = e.ig_code
+    WHERE a.new_code IS NOT NULL AND e.depth < 10
+),
+snaps AS (SELECT DISTINCT download_date, source_modified FROM {TABLENAME}),
+gone AS (                                        -- symbol renamed/cashed out
+    SELECT DISTINCT a.old_code AS code, s.download_date
+    FROM ticker_aliases a JOIN snaps s ON a.effective_date <= s.source_modified
+),
+candidates(code, ig_code, renamed_on, download_date, priority) AS (
+    SELECT m.code, m.code, NULL, m.download_date, 0
+    FROM {TABLENAME} m
+    WHERE NOT EXISTS (SELECT 1 FROM gone g
+                      WHERE g.code = m.code AND g.download_date = m.download_date)
+    UNION ALL
+    SELECT l.code, l.ig_code, l.renamed_on, s.download_date, l.depth
+    FROM later l JOIN snaps s ON s.source_modified < l.renamed_on
+    UNION ALL
+    SELECT e.code, e.ig_code, e.renamed_on, s.download_date, 100 - e.depth
+    FROM earlier e JOIN snaps s ON e.renamed_on <= s.source_modified
+),
+ranked AS (
+    SELECT c.*, ROW_NUMBER() OVER (PARTITION BY c.code, c.download_date
+                                   ORDER BY c.priority) AS rn
+    FROM candidates c JOIN {TABLENAME} m
+      ON m.code = c.ig_code AND m.download_date = c.download_date
+    WHERE c.priority = 0 OR NOT EXISTS (SELECT 1 FROM gone g
+                    WHERE g.code = c.ig_code AND g.download_date = c.download_date)
 )
-SELECT m.code, m.code AS ig_code, NULL AS renamed_on, {_IG_COLS}
-FROM {TABLENAME} m
-UNION ALL
-SELECT v.code, v.ig_code, v.renamed_on, {_IG_COLS}
-FROM via_alias v JOIN {TABLENAME} m
-  ON m.code = v.ig_code AND m.download_date = v.download_date
-WHERE v.rn = 1
+SELECT r.code, r.ig_code, r.renamed_on, {_IG_COLS}
+FROM ranked r JOIN {TABLENAME} m
+  ON m.code = r.ig_code AND m.download_date = r.download_date
+WHERE r.rn = 1
 """
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -122,8 +158,10 @@ def download_spreadsheet(out_path: Path) -> None:
         log.info("already have %s, not re-downloading", out_path)
         return
     log.info("downloading tiered margin spreadsheet to %s", out_path)
-    # -R keeps the server's Last-Modified as the file's mtime (source_modified)
-    run(["curl", "-sLR", TIERED_URL, "--output", str(out_path)], check=True)
+    # -R keeps the server's Last-Modified as the file's mtime (source_modified);
+    # -f fails on an HTTP error instead of saving the error page as the file
+    run(["curl", "-fsSLR", "-A", USER_AGENT, TIERED_URL, "--output", str(out_path)],
+        check=True)
 
 
 def source_modified(xlsx_path: Path) -> date:
@@ -168,7 +206,7 @@ def parse_tiered_spreadsheet(xlsx_path: Path, download_date: date,
     df["tier1_limit"] = pd.to_numeric(tier1_limit_text, errors="coerce").astype("Int64")
     df["tier1_rate"] = pd.to_numeric(
         df["tier1_rate"].str.replace("%", ""), errors="coerce"
-    ).astype("Int64")
+    ).astype("Float64")
     df.loc[is_sentinel, ["tier1_limit", "tier1_rate"]] = pd.NA
 
     df["download_date"] = download_date.isoformat()
