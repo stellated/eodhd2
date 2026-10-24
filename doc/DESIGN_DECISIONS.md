@@ -2068,6 +2068,41 @@ synthetic data above they come to about 4.7 GB of the 5.3 GB total.
 Storing only the hours the strategy uses (e.g. 04:00-10:30), or putting
 1m in its own db file, is a decision for when the real numbers are in.
 
+### EODHD 1m bars aggregated to 5m vs. EODHD's own 5m bars (2026-10-24)
+**Question (Ian):** before relying on 1m-aggregated-to-5m for NDM trade days
+before 2020-10, does it agree with the 5m feed? Spot check on 13
+ticker-days, 2020-11 to 2026-08, liquid (AAPL, SPY, NVDA, KO) to thin
+(IESC, HOOZ), including GME 2021-01-27: raw 1m and 5m requests for the
+same day, 1m bucketed by `floor(ts / 300) * 300` (a bar's timestamp is
+its start; shifting the buckets a minute either way matches far worse).
+
+**Found:**
+- **Mostly the same:** most bars' OHLC match exactly; the rest usually
+  differ by 3-10 bp. Volume matches within 0.1% outside the opening bar
+  on 10 of the 13 days.
+- **1m keeps bad prints that 5m filters out.** Where they differ, the 1m
+  high is at or above the 5m high and the 1m low at or below the 5m low
+  (two exceptions, both lows). Three days had a single 1m spike far
+  outside the 5m bar: TSLA 2021-03-05 12:00 high 600.00 vs 571.27 (+5.0%),
+  GME 2021-01-27 12:41 350.00 vs 336.56 (+4.0%), NVDA 2023-05-25 09:54
+  385.46 vs 377.90 (+2.0%). The neighbouring minutes come nowhere near.
+- **The 09:30 bar's volume is lower in 1m**, usually 0.5-0.9x of 5m's
+  (GME 0.05x, HOOZ 0.37x), likely because 5m includes the opening
+  auction. Opening prices still match.
+- **Thin tickers disagree more:** IESC had 138 of 390 regular-hours
+  minutes, 23 of 59 bars differ (up to 54 bp), and 1m volume is 0.76x of
+  5m's.
+- **The 5m feed is regular hours only** (78-79 bars); 1m includes pre-
+  and post-market, so Pre-Market Drop needs 1m regardless.
+
+**Decision:** prefer 5m wherever it exists. Aggregated 1m is fine for
+open-to-close returns (opens and closes match), but anything that
+triggers on highs and lows (ORB, stops) needs a spike filter on the 1m
+bars first, e.g. reject a 1m high or low that is more than some
+percentage beyond its neighbouring minutes' range. Don't use 1m opening
+volume for liquidity or slippage work. Nothing built yet; the filter
+belongs wherever the 1m-to-5m aggregation gets written.
+
 ---
 
 ## v2.0 deferred features

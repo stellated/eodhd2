@@ -173,6 +173,19 @@ weekday morning, e.g. Wednesday 4 November.
 | Dilutive S-1 | Dilution; Filing Intensity; Historical Market Cap | Daily for 1 year before and 30 days after each filing |
 | SDA tips | S&P 500 Risk Regime (to compare with the newsletter's regime colours) | Already in `sda.db` |
 
+**Caveat on 1m data aggregated to 5m** (spot check of 13 ticker-days,
+2026-10-24; details in `doc/DESIGN_DECISIONS.md`, "EODHD 1m bars
+aggregated to 5m"): opens and closes match EODHD's own 5m bars, and most
+highs and lows do too, but the 1m feed keeps bad prints the 5m feed
+filters out (e.g. TSLA 2021-03-05 high 600.00 against 571.27 in 5m). So:
+- use 5m wherever it exists (from October 2020);
+- for NDM before then, aggregated 1m is fine for open-to-close returns,
+  but the ORB and any stop need a spike filter on the 1m highs and lows;
+- the 09:30 bar's volume in 1m is often half of 5m's (the opening
+  auction, probably), so don't use it for liquidity;
+- 5m is regular hours only, so Pre-Market Drop needs 1m anyway, and
+  gets the same spike filter.
+
 ## Handover to the analysis repos
 
 One Claude overseeing six repos: SDA, QGMI, NDM ORB, Pre-Market Drop,
