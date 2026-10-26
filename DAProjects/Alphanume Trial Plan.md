@@ -122,25 +122,44 @@ weekday morning, e.g. Wednesday 4 November.
 
 ## During the trial
 
+Ian does the steps that need the account, sudo or a decision; Claude
+(in an eodhd2 session) does the rest. Once the key is in `.env`, tell
+Claude "key's in" and it carries on from Day 1 step 3. Scripts read the
+key from `.env` themselves, so Claude never needs to see it.
+
 **Day 1 (Wednesday morning Melbourne):**
-1. Sign up, create the API key, store it in `.env` as `ALPHANUME_API_KEY`
-   (`.env` is gitignored). A new key can take a few minutes to activate
-   (per the API's own 401 message).
-2. Call each endpoint once; save the response's field list and the
-   earliest and latest dates.
-3. Run the full history pulls (`ops/run_alphanume.sh pull JOB ...`; the
-   pull list is below), in order of value:
+1. **Ian:** sign up, create the API key, store it in `.env` as
+   `ALPHANUME_API_KEY` (`.env` is gitignored). A new key can take a few
+   minutes to activate (per the API's own 401 message).
+2. **Ian:** one test capture, then enable the live timers (both need sudo):
+   ```
+   sudo systemctl start eodhd-alphanume-live@ndm.service
+   journalctl -u eodhd-alphanume-live@ndm.service -n 30
+   sudo systemctl enable --now eodhd-alphanume-premarket.timer eodhd-alphanume-regime.timer eodhd-alphanume-ndm.timer
+   systemctl list-timers 'eodhd-alphanume-*'
+   ```
+   The log should end with "copied to onedrive:...alphanume.db".
+3. **Claude:** call each endpoint once (a scratch script; `get_alphanume.py`
+   has no probe command); record the field list, earliest and latest
+   dates, and paging behaviour, and check them against `JOBS` in
+   `get_alphanume.py`. Fix the script first if an endpoint differs from
+   the docs.
+4. **Claude:** run the full history pulls in the background
+   (`ops/run_alphanume.sh pull JOB ...`; the pull list is below), in
+   order of value:
    Next-Day Movers, Pre-Market Drop Risk, QGMI, Optionable Tickers,
    Reverse Splits, Dilution, Historical Market Cap, Filing Intensity,
    Risk Regime, Wikipedia Views, Ticker Classification.
-4. Record row counts, date ranges and distinct tickers per dataset
-   (`get_alphanume.py summary`). Check the date field names against
-   `DATE_FIELDS` in `eodhd_budget.py`, and whether NDM's `date` is the pick
-   date or the trade date.
-5. Optional: connect the hosted MCP server in an analysis session to try
-   it out.
+   Each dataset is looked at as it lands.
+5. **Claude:** record row counts, date ranges and distinct tickers per
+   dataset (`get_alphanume.py summary`). Check the date field names
+   against `DATE_FIELDS` in `eodhd_budget.py`, and whether NDM's `date`
+   is the pick date or the trade date (settled by the first live NDM
+   capture, 15:35 ET on day 1). Report back to Ian.
+6. **Ian, optional:** connect the hosted MCP server in an analysis
+   session to try it out (OAuth in a browser; not used by this pipeline).
 
-**Day 2 (Thursday morning Melbourne):**
+**Day 2 (Thursday morning Melbourne), all Claude, reported to Ian:**
 1. Check the first live captures arrived.
 2. Data-quality checks on the pulls:
    - gaps in dates (trading days with no rows);
@@ -157,10 +176,15 @@ weekday morning, e.g. Wednesday 4 November.
    those returns against EODHD daily bars.
 
 **Day 3 (Friday morning Melbourne, last full day):**
-1. Pull the recent history again for the live-capture dates and compare
-   with the live captures: same tickers, ranks and scores?
-2. Fill any gaps in the pulls.
-3. Go/no-go (below). Cancel before about 06:00 Saturday if no-go.
+1. **Claude:** pull the recent history again for the live-capture dates
+   and compare with the live captures: same tickers, ranks and scores?
+2. **Claude:** fill any gaps in the pulls.
+3. **Claude:** a go/no-go summary against the criteria below.
+4. **Ian:** decide go/no-go. If no-go, cancel before about 06:00
+   Saturday. Either way, disable the live timers once the trial ends:
+   ```
+   sudo systemctl disable --now eodhd-alphanume-premarket.timer eodhd-alphanume-regime.timer eodhd-alphanume-ndm.timer
+   ```
 
 ## Pull list
 
