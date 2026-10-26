@@ -139,6 +139,8 @@ key from `.env` themselves, so Claude never needs to see it.
    systemctl list-timers 'eodhd-alphanume-*'
    ```
    The log should end with "copied to onedrive:...alphanume.db".
+   
+    When the key's in and the timers are on, tell me (Claude) "key's in".
 3. **Claude:** call each endpoint once (a scratch script; `get_alphanume.py`
    has no probe command); record the field list, earliest and latest
    dates, and paging behaviour, and check them against `JOBS` in
