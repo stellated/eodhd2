@@ -139,3 +139,18 @@ def test_live_capture_is_kept_apart_from_history(conn):
     assert session.calls[0][1] == {"date_gte": "2026-10-21", "date_lte": "2026-10-28"}
     (s,) = ga.summary(conn)
     assert (s["capture"], s["pages"], s["rows"]) == ("live", 2, 4)
+
+
+def test_fetch_window_holds_no_write_lock_during_the_request(tmp_path):
+    # a live capture must be able to write while a long pull waits on the API
+    conn = ga.connect(tmp_path / "alphanume.db")
+
+    def respond(endpoint, params):
+        other = ga.sqlite3.connect(tmp_path / "alphanume.db", timeout=0)
+        other.execute("INSERT INTO windows (job, params, capture, started_at) "
+                      "VALUES ('ndm', '{}', 'live', 'x')")
+        other.commit()
+        other.close()
+        return _Resp(200, {"count": 1, "data": _rows(1)})
+    client, _ = _client(respond)
+    ga.fetch_window(conn, client, "qgmi", {"date_gte": "2026-01-01"})

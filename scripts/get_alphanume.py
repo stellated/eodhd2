@@ -173,6 +173,10 @@ def fetch_window(conn, client: Client, job: str, params: dict,
         "INSERT INTO windows (job, params, capture, started_at) VALUES (?,?,?,?)",
         (job, _key(params), capture, _now()),
     ).lastrowid
+    # commit before the request: an open write transaction held through every
+    # HTTP call kept a long pull holding the lock, and the live timers' captures
+    # timed out on "database is locked" (2026-10-27)
+    conn.commit()
     page, total, page_params = 0, 0, dict(params)
     while True:
         status, body = client.get(endpoint, page_params)
