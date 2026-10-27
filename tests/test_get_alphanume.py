@@ -118,6 +118,7 @@ def test_pull_range_resumes_without_refetching_completed_windows(conn, monkeypat
 
 def test_per_ticker_pull_uses_tickers_already_captured(conn, monkeypatch):
     monkeypatch.setattr(ga, "HISTORY_START", date(2026, 1, 1))
+    monkeypatch.setattr(ga, "WINDOW_DAYS", 10)
     monkeypatch.setattr(ga, "JOBS", {**ga.JOBS, "market_cap": {
         **ga.JOBS["market_cap"], "tickers_from": ["qgmi"]}})
     client, session = _client(lambda e, p: _Resp(200, {
@@ -125,8 +126,10 @@ def test_per_ticker_pull_uses_tickers_already_captured(conn, monkeypatch):
                              {"date": "2026-01-02", "ticker": "BBB"}]}))
     ga.pull(conn, client, "qgmi", date(2026, 1, 31))
     session.calls.clear()
-    ga.pull(conn, client, "market_cap", date(2026, 1, 31))
-    assert sorted(p["ticker"] for _, p in session.calls) == ["AAA", "BBB"]
+    ga.pull(conn, client, "market_cap", date(2026, 12, 31))
+    # one request per ticker for its whole history, not one per WINDOW_DAYS
+    assert sorted((p["ticker"], p["date_gte"], p["date_lte"]) for _, p in session.calls) == [
+        ("AAA", "2026-01-01", "2026-12-31"), ("BBB", "2026-01-01", "2026-12-31")]
 
 
 def test_live_capture_is_kept_apart_from_history(conn):

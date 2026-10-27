@@ -24,9 +24,10 @@ How a job is split into requests (JOBS[...]["mode"]):
               An unpaged endpoint returning NONPAGED_MAX_ROWS or more rows
               may have been cut off silently, so that window is marked
               superseded and refetched as two halves.
-  per_ticker  a range pull per ticker, for the tickers already captured by
-              the jobs in "tickers_from" (market cap etc. are only needed
-              for names the strategies actually touch).
+  per_ticker  one request per ticker for its whole history (paged), for
+              the tickers already captured by the jobs in "tickers_from"
+              (market cap etc. are only needed for names the strategies
+              actually touch).
   once        a single request with no parameters.
 Paged endpoints are followed through next_cursor: each key in it is sent
 back as cursor_<key>, as the docs describe for premarket-drop-risk.
@@ -220,12 +221,12 @@ def _range_windows(start: date, end: date, days: Optional[int] = None):
 
 
 def pull_range(conn, client, job: str, start: date, end: date,
-               extra: Optional[dict] = None) -> int:
+               extra: Optional[dict] = None, days: Optional[int] = None) -> int:
     """Full history for a date-range job, halving any unpaged window that
     may have been cut off. Returns the rows captured by this call (windows
     completed on an earlier run are skipped, not counted)."""
     paged = JOBS[job].get("paged", False)
-    stack = list(_range_windows(start, end))[::-1]
+    stack = list(_range_windows(start, end, days))[::-1]
     total = 0
     while stack:
         lo, hi = stack.pop()
@@ -276,9 +277,14 @@ def pull(conn, client, job: str, end: date) -> None:
     elif spec["mode"] == "per_ticker":
         tickers = captured_tickers(conn, spec["tickers_from"])
         logging.info(f"{job}: {len(tickers)} tickers from {spec['tickers_from']}")
+        # one window per ticker: a ticker's whole history comes back in one
+        # response (AAPL market cap: 2,784 rows), and these endpoints are
+        # paged anyway, so yearly windows would only multiply the requests
+        whole = (end - HISTORY_START).days + 1
         for i, ticker in enumerate(tickers, 1):
             try:
-                pull_range(conn, client, job, HISTORY_START, end, extra={"ticker": ticker})
+                pull_range(conn, client, job, HISTORY_START, end, extra={"ticker": ticker},
+                           days=whole)
             except AlphanumeError as e:
                 logging.warning(f"{job} {ticker}: {e}")
             if i % 100 == 0:
