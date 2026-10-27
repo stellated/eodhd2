@@ -188,6 +188,48 @@ key from `.env` themselves, so Claude never needs to see it.
    sudo systemctl disable --now eodhd-alphanume-premarket.timer eodhd-alphanume-regime.timer eodhd-alphanume-ndm.timer
    ```
 
+## Day 1 results (2026-10-27, New York time)
+
+Every endpoint matched the docs' field names; every history pull
+completed with no HTTP errors (`~/data/alphanume.db`, 560 MB).
+
+| Dataset | Rows | From | To | Tickers | Shape |
+|---|---|---|---|---|---|
+| Next-Day Movers | 3,435 | 2024-01-31 | 2026-10-26 | 166 | 5 picks every day |
+| Pre-Market Drop Risk | 6,408 | 2024-05-10 | 2026-10-27 | 1,101 | ~10 a day, up to 27 |
+| QGMI | 1,180 | 2017-01-03 | 2026-10-01 | 212 | 10 a month (first session) |
+| Optionable Tickers | 343,754 | 2019-01-02 | 2026-10-01 | 6,063 | monthly, ~3,600 a month |
+| Reverse Splits | 3,986 | 2022-10-03 | 2026-10-27 | 3,069 | ~3 a day, many OTC (...F/...Y) |
+| Dilution | 926 | 2025-01-03 | 2026-10-26 | 511 | ~2 a day |
+| S&P 500 Risk Regime | 3,916 | 2011-03-30 | 2026-10-27 | | 0/1; 1 on 29% of days |
+| Ticker Classification | 5,634 | | | 5,634 | one snapshot |
+| Historical Market Cap | 2.6M | 2015-09-30 | 2026-10-26 | 1,991 | 1,843 of 3,834 tickers empty |
+| Filing Intensity | 2.6M | 2020-01-02 | 2026-10-26 | 1,501 | 2,333 of 3,834 empty |
+| Wikipedia Views | 138,783 | 2024-01-02 | 2026-10-26 | 142 | 70 of 212 empty |
+
+- **NDM's `date` is the pick date.** Picks dated 10-27 appeared after
+  15:30 on 10-27; 10-26's returns were filled in by 16:35, after the
+  next session's close.
+- **Every dataset's date field is `date`**; `DATE_FIELDS`' other names
+  just fall through to it.
+- **Empty per-ticker results** are nearly all Reverse Splits' OTC and
+  long-delisted names; the strategy datasets' tickers are covered (at
+  most 3% empty).
+- **Risk Regime isn't a bear-market flag:** 1 on 100 days of 2020, 118
+  of 2022 and 103 of 2025. Its definition needs checking before using it
+  to split results by regime.
+- **NDM and Pre-Market Drop start after October 2020,** so 1m data is
+  only needed for Pre-Market Drop's pre-market hours.
+- **EODHD budget** (`eodhd_budget.py`, real data): 3,834 tickers, 18,848
+  calls with merged spans or 56,118 one request per event day (limit
+  100,000 a day), about 0.9 GB, mostly Pre-Market Drop's 1m days. 179
+  tickers aren't in EODHD's symbol lists (156 of them Reverse Splits OTC
+  names; 17 Pre-Market Drop, 6 Dilution).
+- **Fixes:** per-ticker jobs make one request per ticker, not one per
+  year (1b7bdfe); the pull no longer holds the write lock during a
+  request (41467e4), which had made the 15:35 NDM capture fail with
+  "database is locked" (rerun by hand at 15:54).
+
 ## Pull list
 
 | Project | Alphanume datasets | EODHD data |

@@ -259,7 +259,7 @@ def _print(rows, total, calls_per_day):
     for job, p, skipped, unknown, evs in rows:
         print(f"\n{job}: " + ", ".join(f"{c}={p[c]:,}" for c in cols) + f", mb={p['mb']:,.0f}")
         if evs:
-            print(f"  dates {evs[0][1]}..{max(d for _, d in evs)}")
+            print(f"  dates {min(d for _, d in evs)}..{max(d for _, d in evs)}")
         if skipped:
             print(f"  WARNING {skipped:,} rows skipped: no ticker or no date in {DATE_FIELDS[job]}")
         if p["daily_sessions_clipped"]:
