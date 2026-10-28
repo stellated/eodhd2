@@ -215,9 +215,17 @@ completed with no HTTP errors (`~/data/alphanume.db`, 560 MB).
 - **Empty per-ticker results** are nearly all Reverse Splits' OTC and
   long-delisted names; the strategy datasets' tickers are covered (at
   most 3% empty).
-- **Risk Regime isn't a bear-market flag:** 1 on 100 days of 2020, 118
-  of 2022 and 103 of 2025. Its definition needs checking before using it
-  to split results by regime.
+- **Risk Regime: 0 = risk-on, 1 = risk-off** ("elevated volatility and
+  stress"), from "forward-looking implied volatility metrics", not
+  moving averages or a VIX threshold; published 10:10 ET each trading day
+  (alphanume's sp500-risk-regime guide; model and horizon not stated).
+  Against EODHD's VIX close: mean 16.4 on 0 days, 22.3 on 1 days; every
+  crisis day checked is 1 (2020-03-16 at VIX 82.7, 2024-08-05, 2025-04-08);
+  no single VIX level matches it more than 75% of the time. It switches
+  93 times in 15.6 years (runs of about 6 weeks). So it's a stress
+  flag, not a bear-market flag: 47% of 2022's days, 41% of 2025's, 6% of
+  2017's. A date's label is only known from 10:10 that day, so anything
+  entering at or before the open must use the previous session's label.
 - **NDM and Pre-Market Drop start after October 2020,** so 1m data is
   only needed for Pre-Market Drop's pre-market hours.
 - **EODHD budget** (`eodhd_budget.py`, real data): 3,834 tickers, 18,848
