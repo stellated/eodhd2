@@ -132,6 +132,26 @@ def test_per_ticker_pull_uses_tickers_already_captured(conn, monkeypatch):
         ("AAA", "2026-01-01", "2026-12-31"), ("BBB", "2026-01-01", "2026-12-31")]
 
 
+def test_per_ticker_pull_skips_tickers_done_on_an_earlier_day(conn, monkeypatch):
+    monkeypatch.setattr(ga, "HISTORY_START", date(2026, 1, 1))
+    monkeypatch.setattr(ga, "JOBS", {**ga.JOBS, "market_cap": {
+        **ga.JOBS["market_cap"], "tickers_from": ["qgmi"]}})
+    tickers = ["AAA"]
+
+    def respond(endpoint, params):
+        return _Resp(200, {"count": 1, "data": [
+            {"date": "2026-01-02", "ticker": t} for t in tickers]})
+    client, session = _client(respond)
+    ga.pull(conn, client, "qgmi", date(2026, 1, 31))
+    ga.pull(conn, client, "market_cap", date(2026, 12, 30))
+    tickers.append("BBB")
+    ga.pull_range(conn, client, "qgmi", date(2026, 2, 1), date(2026, 2, 28))
+    session.calls.clear()
+    ga.pull(conn, client, "market_cap", date(2026, 12, 31))
+    assert [(e, p.get("ticker")) for e, p in session.calls] == [
+        ("historical-market-cap", "BBB")]
+
+
 def test_live_capture_is_kept_apart_from_history(conn):
     client, session = _client(lambda e, p: _Resp(200, {"count": 2, "data": _rows(2)}))
     ga.live(conn, client, "ndm", date(2026, 10, 28))

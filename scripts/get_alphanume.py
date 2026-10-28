@@ -68,8 +68,9 @@ JOBS = {
     "optionable": {"endpoint": "optionable-tickers", "mode": "range", "paged": True},
     "reverse_splits": {"endpoint": "capital/reverse-splits", "mode": "range", "paged": True},
     "dilution": {"endpoint": "dilution", "mode": "range"},
+    # market cap for the whole optionable universe: QGMI's small-cap question
     "market_cap": {"endpoint": "historical-market-cap", "mode": "per_ticker", "paged": True,
-                   "tickers_from": _TICKER_JOBS},
+                   "tickers_from": _TICKER_JOBS + ["optionable"]},
     "filing_intensity": {"endpoint": "filing-intensity", "mode": "per_ticker", "paged": True,
                          "tickers_from": _TICKER_JOBS},
     "risk_regime": {"endpoint": "sp500-risk-regime", "mode": "range"},
@@ -159,6 +160,16 @@ def _completed(conn, job: str, params: dict) -> bool:
         "SELECT 1 FROM windows WHERE job = ? AND params = ? AND capture = 'history' "
         "AND completed_at IS NOT NULL AND superseded = 0",
         (job, _key(params)),
+    ).fetchone() is not None
+
+
+def _ticker_completed(conn, job: str, ticker: str) -> bool:
+    """A per-ticker job's history window for `ticker` is complete, whatever
+    its end date (a later run's window ends on a later day)."""
+    return conn.execute(
+        "SELECT 1 FROM windows WHERE job = ? AND json_extract(params, '$.ticker') = ? "
+        "AND capture = 'history' AND completed_at IS NOT NULL AND superseded = 0",
+        (job, ticker),
     ).fetchone() is not None
 
 
@@ -286,6 +297,8 @@ def pull(conn, client, job: str, end: date) -> None:
         # paged anyway, so yearly windows would only multiply the requests
         whole = (end - HISTORY_START).days + 1
         for i, ticker in enumerate(tickers, 1):
+            if _ticker_completed(conn, job, ticker):
+                continue
             try:
                 pull_range(conn, client, job, HISTORY_START, end, extra={"ticker": ticker},
                            days=whole)
