@@ -152,6 +152,13 @@ def test_per_ticker_pull_skips_tickers_done_on_an_earlier_day(conn, monkeypatch)
         ("historical-market-cap", "BBB")]
 
 
+def test_per_ticker_pull_takes_an_explicit_ticker_list(conn, monkeypatch):
+    monkeypatch.setattr(ga, "HISTORY_START", date(2026, 1, 1))
+    client, session = _client(lambda e, p: _Resp(200, {"count": 0, "data": []}))
+    ga.pull(conn, client, "market_cap", date(2026, 12, 31), tickers=["ZZZ", "YYY"])
+    assert sorted(p["ticker"] for _, p in session.calls) == ["YYY", "ZZZ"]
+
+
 def test_live_capture_is_kept_apart_from_history(conn):
     client, session = _client(lambda e, p: _Resp(200, {"count": 2, "data": _rows(2)}))
     ga.live(conn, client, "ndm", date(2026, 10, 28))

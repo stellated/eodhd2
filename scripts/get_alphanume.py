@@ -282,7 +282,8 @@ def captured_tickers(conn, jobs: list[str]) -> list[str]:
     return sorted(tickers)
 
 
-def pull(conn, client, job: str, end: date) -> None:
+def pull(conn, client, job: str, end: date, tickers: Optional[list[str]] = None) -> None:
+    """`tickers`, if given, replaces a per-ticker job's "tickers_from"."""
     spec = JOBS[job]
     if spec["mode"] == "once":
         if not _completed(conn, job, {}):
@@ -290,8 +291,10 @@ def pull(conn, client, job: str, end: date) -> None:
     elif spec["mode"] == "range":
         pull_range(conn, client, job, HISTORY_START, end)
     elif spec["mode"] == "per_ticker":
-        tickers = captured_tickers(conn, spec["tickers_from"])
-        logging.info(f"{job}: {len(tickers)} tickers from {spec['tickers_from']}")
+        source = "--tickers-file" if tickers is not None else spec["tickers_from"]
+        if tickers is None:
+            tickers = captured_tickers(conn, spec["tickers_from"])
+        logging.info(f"{job}: {len(tickers)} tickers from {source}")
         # one window per ticker: a ticker's whole history comes back in one
         # response (AAPL market cap: 2,784 rows), and these endpoints are
         # paged anyway, so yearly windows would only multiply the requests
@@ -353,6 +356,8 @@ def main() -> None:
     p_pull = sub.add_parser("pull")
     p_pull.add_argument("jobs", nargs="*", help=f"any of: {', '.join(JOBS)}")
     p_pull.add_argument("--all", action="store_true")
+    p_pull.add_argument("--tickers-file", type=Path,
+                        help="one ticker per line: per-ticker jobs pull these instead of their tickers_from")
     p_live = sub.add_parser("live")
     p_live.add_argument("jobs", nargs="+", choices=list(JOBS))
     sub.add_parser("summary")
@@ -368,11 +373,14 @@ def main() -> None:
     today = datetime.now(NY).date()
     if args.cmd == "pull":
         jobs = list(JOBS) if args.all else args.jobs
+        tickers = None
+        if args.tickers_file:
+            tickers = [t.strip() for t in args.tickers_file.read_text().split() if t.strip()]
         if not jobs or set(jobs) - set(JOBS):
             parser.error(f"name jobs from {', '.join(JOBS)}, or use --all")
         for job in jobs:
             try:
-                pull(conn, client, job, today)
+                pull(conn, client, job, today, tickers)
             except AlphanumeError as e:
                 logging.error(f"{job}: {e} -- stopping this job; rerun to resume")
     else:
