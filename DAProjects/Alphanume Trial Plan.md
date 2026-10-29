@@ -185,7 +185,7 @@ key from `.env` themselves, so Claude never needs to see it.
 4. **Ian:** decide go/no-go. If no-go, cancel before about 06:00
    Saturday. Either way, disable the live timers once the trial ends:
    ```
-   sudo systemctl disable --now eodhd-alphanume-premarket.timer eodhd-alphanume-regime.timer eodhd-alphanume-ndm.timer
+   sudo systemctl disable --now eodhd-alphanume-premarket.timer eodhd-alphanume-regime.timer eodhd-alphanume-ndm.timer eodhd-alphanume-dilution.timer
    ```
 
 ## Day 1 results (2026-10-27, New York time)
@@ -351,6 +351,21 @@ with every later tip and outcome physically deleted), `OUTCOMES_SCHEMA.md`,
 variants are built on the analysis side.
 
 ## Go/no-go for a paid subscription
+
+**Decision (Ian, 2026-10-28): no-go.** Cancel before the trial converts
+(Friday 2026-10-30 15:00 ET = Saturday 06:00 Melbourne). The full history
+of every dataset is captured; a subscription would add only live lists,
+and nothing has yet been shown worth trading live. Against the criteria
+below: history depth, point-in-time integrity (no revisions; Reverse
+Splits' backfill and Dilution's late fields handled by available dates),
+sample size and the EODHD budget pass; tradeability at IG passes for NDM
+and QGMI but fails for Pre-Market Drop, Dilution and Reverse Splits (about
+0 shortable a week); the early signal is clear only for Pre-Market Drop,
+which IG can't trade. Still open: whether captured data may be kept after
+cancelling (the licence question Alphanume hasn't answered), and whether
+Pro is now $99 a month (as the "Golden Age of Short Selling" article says)
+rather than $349, which would make subscribing again later cheap.
+
 
 Go if all of these hold:
 1. **Licence:** the answer on keeping data is acceptable, or the cost of
