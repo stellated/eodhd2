@@ -27,22 +27,23 @@ after the tip rather than once its window closes; see _log_stale_tickers().
 And it logs days where a tipped symbol's 5m bars have no volume while its
 daily bar traded -- the other way a rename shows up; see _log_dead_intraday().
 
-intraday-price runs also call update_outcomes() after the price fetch --
-the outcomes table's entry/exit trigger logic is entirely 5-minute-bar
-based, so it has nothing new to work with until intraday_5m does. See
-doc/DESIGN_DECISIONS.md ("outcomes design").
+intraday-price and all-price runs also call update_outcomes() after the
+price fetch -- the outcomes table's entry/exit trigger logic is entirely
+5-minute-bar based, so it has nothing new to work with until intraday_5m
+does. See doc/DESIGN_DECISIONS.md ("outcomes design").
 
 --mode selects what this run actually fetches -- see doc/DESIGN_DECISIONS.md
-("weekday/Saturday/Sunday split") for why price fetching isn't done every
-day:
-  tips-only       parse new tip emails only, no price fetch (weekdays)
-  daily-price     also fetch daily OHLCV into PRICE_TABLENAME (Saturdays)
-  intraday-price  also fetch 5m intraday OHLCV into INTRADAY_TABLENAME (Sundays)
+("price fetch every day: --mode all-price"):
+  tips-only       parse new tip emails only, no price fetch
+  daily-price     also fetch daily OHLCV into PRICE_TABLENAME
+  intraday-price  also fetch 5m intraday OHLCV into INTRADAY_TABLENAME
+  all-price       also fetch both, then update outcomes (the scheduled
+                   run, Mon-Sat, since 2026-10-29)
   backfill        one-time historical catch-up for a date range the normal
                    runs never covered -- see below and
                    doc/DESIGN_DECISIONS.md ("historical tip backfill")
 Which mode runs which day is entirely a scheduling decision, made in ops/
-(three separate systemd timers), not in this script.
+(systemd timers), not in this script.
 
 --mode backfill (with required --start-date/--end-date, inclusive): parses
 only the tip emails within that historical window (read-only IMAP search,
@@ -92,12 +93,17 @@ INTRADAY_TABLENAME = "intraday_5m"
 INTRADAY_INTERVAL = "5m"
 TIPS_TABLENAME = "tip_details"  # must match tips_exchange2sqlite's default
 
-# (tablename, interval) for each --mode that actually fetches price data.
-# "tips-only" has no entry -- checked explicitly in main() instead.
+# (tablename, interval) pairs, fetched in order, for each --mode that
+# fetches price data for still-open tips. "tips-only" and "backfill" have
+# no entry -- checked explicitly in main() instead.
 MODE_PRICE_CONFIG = {
-    "daily-price": (PRICE_TABLENAME, PRICE_INTERVAL),
-    "intraday-price": (INTRADAY_TABLENAME, INTRADAY_INTERVAL),
+    "daily-price": [(PRICE_TABLENAME, PRICE_INTERVAL)],
+    "intraday-price": [(INTRADAY_TABLENAME, INTRADAY_INTERVAL)],
+    "all-price": [(PRICE_TABLENAME, PRICE_INTERVAL),
+                  (INTRADAY_TABLENAME, INTRADAY_INTERVAL)],
 }
+# Modes whose run ends with update_outcomes().
+OUTCOMES_MODES = {"intraday-price", "all-price"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("daily_update")
@@ -330,9 +336,10 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["tips-only", "daily-price", "intraday-price", "backfill"],
+        choices=["tips-only", "daily-price", "intraday-price", "all-price", "backfill"],
         help="tips-only: parse emails, no price fetch. daily-price: also "
              "fetch daily OHLCV. intraday-price: also fetch 5m OHLCV. "
+             "all-price: both, then update outcomes. "
              "backfill: historical catch-up for --start-date..--end-date.",
     )
     parser.add_argument(
@@ -438,17 +445,16 @@ def main() -> None:
             tip_list = sorted(
                 set(new_tips) | set(open_tips), key=lambda t: (t[1], t[0])
             )
-            tablename, interval = MODE_PRICE_CONFIG[args.mode]
-
             if tip_list:
-                tips(db, tip_list, tablename, interval)
-                log.info(
-                    "fetched %s price windows for %d tip(s)", interval, len(tip_list)
-                )
+                for tablename, interval in MODE_PRICE_CONFIG[args.mode]:
+                    tips(db, tip_list, tablename, interval)
+                    log.info(
+                        "fetched %s price windows for %d tip(s)", interval, len(tip_list)
+                    )
             else:
                 log.info("no tips (new or still-open) to fetch price windows for")
 
-            if args.mode == "intraday-price":
+            if args.mode in OUTCOMES_MODES:
                 update_outcomes(db)
                 log.info("updated outcomes")
 

@@ -235,7 +235,10 @@ design") for the full rationale behind every column and the status enum.
   present, deduping same-day duplicate tickers to the lowest `tip_n`
   (logged).
 - Recomputes every `pending`/`open` row against currently-available
-  `intraday_5m` data, from scratch each call (not incremental).
+  `intraday_5m` data, from scratch each call (not incremental). Bars dated
+  on/after today in the exchange's timezone are ignored
+  (`_completed_sessions_only()`), so a session not yet closed never
+  decides a trigger.
 - Falls back to `daily` bars (`_load_bars_with_fallback()`) when a ticker
   has zero `intraday_5m` rows at all, its window has permanently
   closed, **and** EODHD itself confirmed it has no intraday data for that
@@ -543,15 +546,17 @@ Run by three separate systemd timer/service pairs in `ops/`
 (rclone), runs this script, and pushes it back. The script itself is
 storage-agnostic — it just reads/writes whatever `--db-path` points at.
 
-`--mode {tips-only,daily-price,intraday-price}` (required) selects what a
-run actually fetches — see `doc/DESIGN_DECISIONS.md`
-("weekday/Saturday/Sunday split"):
-- **tips-only** (weekdays, `eodhd-daily-update.timer`): parses emails only,
-  no price fetch at all.
-- **daily-price** (Saturdays, `eodhd-daily-update-1d.timer`): also fetches
-  daily OHLCV into `PRICE_TABLENAME` ("daily").
-- **intraday-price** (Sundays, `eodhd-daily-update-5m.timer`): also fetches
-  5-minute OHLCV into `INTRADAY_TABLENAME` ("intraday_5m").
+`--mode {tips-only,daily-price,intraday-price,all-price,backfill}`
+(required) selects what a run actually fetches -- see
+`doc/DESIGN_DECISIONS.md` ("Price fetch every day: --mode all-price"):
+- **all-price** (the scheduled run since 2026-10-29: weekdays via
+  `eodhd-daily-update.timer`, Saturdays via `eodhd-daily-update-1d.timer`):
+  fetches daily OHLCV into `PRICE_TABLENAME` ("daily"), then 5-minute
+  OHLCV into `INTRADAY_TABLENAME` ("intraday_5m"), then updates outcomes.
+  Saturday's run also takes the weekly snapshot.
+- **tips-only**: parses emails only, no price fetch.
+- **daily-price** / **intraday-price**: one price table only (manual runs;
+  `intraday-price` was the Sunday run before 2026-10-29).
 
 Each run:
 1. Downloads unseen tip emails (`email_downloader.download_emails`,
@@ -569,9 +574,10 @@ Each run:
    `(tip_date, code)` before use -- a plain `set`'s iteration order is
    hash-based and scrambles from run to run, which makes the log (and
    diagnosing a failure from it) much harder to follow.
-4. Calls `tips()` once with the sorted list and the tablename/interval for
-   the current `--mode` (`MODE_PRICE_CONFIG`), if the list is non-empty
-   (logs and skips otherwise). If `--mode` is `intraday-price`, also calls
+4. Calls `tips()` with the sorted list once per tablename/interval for
+   the current `--mode` (`MODE_PRICE_CONFIG`; daily then 5m for
+   `all-price`), if the list is non-empty (logs and skips otherwise). If
+   `--mode` is `intraday-price` or `all-price`, also calls
    `eodhd_io.update_outcomes(db)` right after -- the `outcomes` table's
    trigger logic is entirely 5-minute-bar based, so it has nothing new to
    work with until `intraday_5m` does (see `doc/DESIGN_DECISIONS.md`,
@@ -618,7 +624,8 @@ the full rationale, including why this uses a calendar-day cutoff rather than
 checking actual row coverage in the price table.
 
 ### Weekly db snapshots and the disk-space alert (added 2026-10-11)
-After a successful `intraday-price` run, `run_daily_update.sh` also takes a
+After a successful Saturday `all-price` run (or any `intraday-price` run),
+`run_daily_update.sh` also takes a
 dated snapshot of the pushed db directly on the remote (server-side
 `rclone copyto`, e.g. `sda.db` → `sda.2026-10-11.db`) and prunes snapshots
 older than `SNAPSHOT_RETENTION_DAYS` (default 28). See

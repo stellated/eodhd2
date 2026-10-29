@@ -7,16 +7,14 @@
 # America/New_York).
 
 [Unit]
-Description=Run eodhd-daily-update (daily-price) on Saturdays
+Description=Run eodhd-daily-update (all-price) on Saturdays
 
 [Timer]
-# Saturday only. Markets are closed and Friday's (and the whole week's)
-# daily bars are published by EODHD well before this runs, so this is the
-# natural day for the weekly daily-OHLCV catch-up -- see
-# doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split"). Same 04:00 ET
-# timing as the weekday tips-only run for consistency; there's no
-# before-market-open constraint on a non-trading day, so this could move if
-# it ever needs to.
+# Saturday: the same all-price run as weekdays (see the .service), which
+# picks up Friday's session and takes the weekly db snapshot -- see
+# doc/DESIGN_DECISIONS.md ("price fetch every day: --mode all-price").
+# There's no before-market-open constraint on a non-trading day, so this
+# could move if it ever needs to.
 OnCalendar=Sat *-*-* 04:00:00
 Persistent=true
 RandomizedDelaySec=10m

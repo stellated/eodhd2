@@ -5,7 +5,7 @@
 # doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split").
 
 [Unit]
-Description=EODHD weekday tip email capture (no price fetch)
+Description=EODHD weekday tip email capture and price fetch
 Wants=network-online.target
 After=network-online.target
 
@@ -14,4 +14,4 @@ Type=oneshot
 # Change this to the account that owns the repo checkout and rclone config.
 User=YOUR_USERNAME
 WorkingDirectory=/home/YOUR_USERNAME/repos/eodhd2
-ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/run_daily_update.sh tips-only
+ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/run_daily_update.sh all-price

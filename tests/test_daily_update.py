@@ -360,3 +360,30 @@ def test_main_non_backfill_rejects_start_date(monkeypatch, tmp_path):
             "--mode", "tips-only", "--start-date", "2026-04-08",
         ],
     )
+
+
+def test_main_all_price_fetches_daily_then_5m_then_updates_outcomes(monkeypatch, tmp_path):
+    import scripts.daily_update as du
+
+    db_path = tmp_path / "x.db"
+    with Database(db_path) as db:
+        tip_date = (date.today() - timedelta(days=3)).isoformat()
+        _seed_tip_details(db, [("NASDAQ", tip_date, 1, "AAPL.US")])
+    calls = []
+    monkeypatch.setattr(du, "download_emails", lambda **kw: None)
+    monkeypatch.setattr(
+        du, "tips",
+        lambda db, tip_list, tablename, interval: calls.append(
+            (tablename, interval, len(tip_list))),
+    )
+    monkeypatch.setattr(du, "update_outcomes", lambda db: calls.append("outcomes"))
+    for name in ("_log_unresolved_tips", "_log_stale_tickers", "_log_dead_intraday"):
+        monkeypatch.setattr(du, name, lambda db: None)
+    for key in ("imap_server", "imap_username", "imap_password", "EODHD_API_TOKEN"):
+        monkeypatch.setenv(key, "x")
+    monkeypatch.setattr(sys, "argv", [
+        "daily_update.py", "--db-path", str(db_path), "--eml-dir", str(tmp_path / "eml"),
+        "--mode", "all-price",
+    ])
+    main()
+    assert calls == [("daily", "1d", 1), ("intraday_5m", "5m", 1), "outcomes"]

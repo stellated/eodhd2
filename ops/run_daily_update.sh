@@ -3,9 +3,9 @@
 # the database. Pulls the canonical db down from remote storage (rclone),
 # runs the update, pushes it back, then deletes the local scratch copy.
 #
-# Usage: run_daily_update.sh <tips-only|daily-price|intraday-price|backfill> [extra daily_update.py args, e.g. --all-emails]
+# Usage: run_daily_update.sh <tips-only|daily-price|intraday-price|all-price|backfill> [extra daily_update.py args, e.g. --all-emails]
 # The mode is baked into each .service unit's ExecStart= -- see
-# doc/DESIGN_DECISIONS.md ("weekday/Saturday/Sunday split"). Any additional
+# doc/DESIGN_DECISIONS.md ("price fetch every day: --mode all-price"). Any additional
 # args (e.g. --all-emails, for a second independent consumer of the same
 # mailbox -- see scripts/daily_update.py's docstring) are passed straight
 # through to daily_update.py.
@@ -13,7 +13,8 @@
 # Config comes from ops/daily-update.env (copy daily-update.env.example and
 # edit it for this machine) or environment overrides.
 #
-# After a successful intraday-price run, also takes a dated snapshot of
+# After a successful Saturday all-price run (or any intraday-price run),
+# also takes a dated snapshot of
 # the pushed db on the remote and prunes snapshots older than
 # SNAPSHOT_RETENTION_DAYS -- see snapshot_and_prune() below and
 # doc/DESIGN_DECISIONS.md ("weekly db snapshots + retention").
@@ -27,7 +28,7 @@
 # staleness check and snapshot_and_prune()'s pruning logic below.
 set -euo pipefail
 
-MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price|backfill> [extra args]}"
+MODE="${1:?Usage: run_daily_update.sh <tips-only|daily-price|intraday-price|all-price|backfill> [extra args]}"
 shift
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -107,9 +108,10 @@ fi
 
 # Keeps a dated snapshot of ${RCLONE_REMOTE} next to it on the remote
 # (e.g. sda.db -> sda.2026-10-11.db), and prunes snapshots older than
-# ${SNAPSHOT_RETENTION_DAYS} days. Only called after intraday-price (see
-# the mode check at the bottom of this script) -- "after each Sunday run"
-# in doc/DESIGN_DECISIONS.md ("weekly db snapshots + retention").
+# ${SNAPSHOT_RETENTION_DAYS} days. Called once a week: after Saturday's
+# all-price run, or after an intraday-price run (the Sunday run before
+# 2026-10-29) -- see the check at the bottom of this script and
+# doc/DESIGN_DECISIONS.md ("weekly db snapshots + retention").
 #
 # The copy is between two paths on the same rclone remote, so rclone does
 # it server-side on OneDrive -- no multi-hundred-MB round trip through
@@ -199,7 +201,7 @@ print((end + datetime.timedelta(days=1)).isoformat())
     echo "[daily-update] backfill progress advanced to ${BACKFILL_NEXT_START}"
 fi
 
-if [ "${MODE}" = "intraday-price" ]; then
+if [ "${MODE}" = "intraday-price" ] || { [ "${MODE}" = "all-price" ] && [ "$(date +%u)" = 6 ]; }; then
     snapshot_and_prune
 fi
 

@@ -14,6 +14,7 @@ from src.eodhd_io import (
     _apply_slippage,
     _check_open,
     _check_pending,
+    _completed_sessions_only,
     _entry_window_closed,
     _level_crossed,
     _load_bars_with_fallback,
@@ -942,3 +943,19 @@ def test_update_outcomes_split_inside_window_is_not_a_stop(tmp_path):
             "WHERE code = 'AAA.US' AND tip_date = '2026-01-05'"
         ).fetchone()
     assert row == ("closed_target", 10.5, 12.0)
+
+
+# --- _completed_sessions_only ---------------------------------------------
+
+def test_completed_sessions_only_drops_today_and_later():
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "15:55:00", 10, 10, 10, 10),
+        _bar(2, date(2026, 1, 6), "09:30:00", 10, 10, 10, 10),
+        _bar(3, date(2026, 1, 7), "09:30:00", 10, 10, 10, 10),
+    ])
+    kept = _completed_sessions_only(bars, "AAPL.US", today=date(2026, 1, 6))
+    assert kept["local_date"].to_list() == [date(2026, 1, 5)]
+
+
+def test_completed_sessions_only_empty_passes_through():
+    assert _completed_sessions_only(pl.DataFrame(), "AAPL.US").is_empty()

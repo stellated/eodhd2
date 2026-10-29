@@ -9,12 +9,11 @@
 Description=Run eodhd-daily-update (tips-only) on weekdays
 
 [Timer]
-# Weekdays only -- Saturday/Sunday are handled by the separate
-# eodhd-daily-update-1d.timer / eodhd-daily-update-5m.timer, which also
-# fetch price data (daily bars / 5m intraday respectively). Price fetching
-# is deliberately NOT done here on weekdays -- see doc/DESIGN_DECISIONS.md
-# ("weekday/Saturday/Sunday split"); a weekday priority-ticker fetch is
-# planned but not yet built.
+# Weekdays. Since 2026-10-29 this run also fetches daily and 5m bars for
+# every still-open tip and updates outcomes (--mode all-price, see the
+# .service); Saturday's eodhd-daily-update-1d.timer does the same for
+# Friday's session. See doc/DESIGN_DECISIONS.md ("price fetch every day:
+# --mode all-price").
 #
 # Fires in the server's local time (this VM is set to America/New_York --
 # check `timedatectl` if that ever changes, and adjust this value

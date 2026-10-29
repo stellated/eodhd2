@@ -1467,6 +1467,25 @@ def _window_bars(bars: pl.DataFrame, start: date, n_days: int) -> pl.DataFrame:
     return bars.filter(pl.col("local_date").is_in(days) & (pl.col("vo") > 0))
 
 
+def _completed_sessions_only(
+    bars: pl.DataFrame, code: str, today: Optional[date] = None
+) -> pl.DataFrame:
+    """Drops bars dated on/after today in the exchange's own timezone, so
+    a session still trading (or whose bars EODHD hasn't finished
+    publishing) never decides a trigger. A terminal outcomes row is never
+    revisited, so a time exit or window close decided on a partial day
+    would stay wrong (CBZ/CRSR/LB, 2026-10-23, were terminal rows decided
+    before their windows were complete). Matters once price runs are
+    daily (--mode all-price, 2026-10-29): the scheduled 04:00 run only
+    ever has completed sessions, but a manual run during the day would
+    not. `today` is for tests."""
+    if bars.is_empty():
+        return bars
+    if today is None:
+        today = datetime.now(ZoneInfo(EXCHANGE_INFO[_suffix(code)]["tz"])).date()
+    return bars.filter(pl.col("local_date") < today)
+
+
 def _sell_fields(bar: dict, trigger_price: float, pos: dict) -> dict:
     """Common fields for any exit (target/stop/time) -- same slippage
     treatment regardless of why the exit happened."""
@@ -1925,6 +1944,7 @@ def update_outcomes(db: "Database", tablename: str = "outcomes") -> None:
             bars, granularity = _load_bars_with_fallback(
                 db, pos["code"], from_date=anchor, tip_date=tip["tip_date"]
             )
+            bars = _completed_sessions_only(bars, pos["code"])
             if bars.is_empty():
                 continue
             splits = _splits_after(db, pos["code"], tip["tip_date"])

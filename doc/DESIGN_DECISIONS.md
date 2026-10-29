@@ -562,6 +562,7 @@ IPO with no intraday history yet), and this makes any future occurrence
 immediately diagnosable rather than another round of log archaeology.
 
 ### weekday/Saturday/Sunday split (2026-09-30)
+(Superseded 2026-10-29 by "Price fetch every day: --mode all-price".)
 **Decision:** `daily_update.py` takes a required `--mode
 {tips-only,daily-price,intraday-price}` flag instead of always fetching
 daily price data. Three separate systemd timer/service pairs in `ops/`
@@ -606,6 +607,34 @@ table directly instead. Superseded 2026-10-14: it now runs
 `unresolved_tips()` against `intraday_5m` too, after that gap let the
 2026-08-05..19 5m windows go unfetched for weeks (see "Daily fallback
 needs EODHD's confirmation, not an empty table").
+
+### Price fetch every day: --mode all-price (2026-10-29)
+**Supersedes the weekday/Saturday/Sunday split above.** Its main reason
+was the quota, and the real limit is 100,000 calls a day, not 1,200 (see
+"EODHD budget for the alphanume datasets"). A run re-fetches every
+still-open tip (about 45 calendar days, ~1,200 tips): about 1,200 daily
+calls plus 6,000 for 5m, 7% of the quota.
+
+**Decision (Ian):** `--mode all-price` fetches daily, then 5m, for new and
+still-open tips, then runs `update_outcomes()`. The weekday 04:00 run and
+the Saturday 04:00 run (Friday's session) both use it; Saturday's also
+takes the weekly db snapshot (`snapshot_and_prune()`, moved from Sunday).
+The Sunday `intraday-price` timer is redundant and is disabled; the
+single-table modes stay for manual runs.
+
+**Gains:** outcomes are current each morning rather than a week late; the
+nightly checks see a gap within a day; and no tip can age out of the
+still-open window unfetched (the 2026-08-05..19 gap).
+
+**Costs:** a weekday run goes from a few minutes to about an hour (the
+1.9 GB pull/push plus the fetch); fine at 04:00, well clear of the 21:00
+IG run. Memory is as for the old Sunday run.
+
+**Guard:** a terminal outcomes row is never revisited, so a trigger
+decided on a partly published or still-trading day would stay wrong.
+`update_outcomes()` now drops bars dated on/after today in the exchange's
+timezone (`_completed_sessions_only()`). The scheduled 04:00 run only has
+completed sessions anyway; this protects a manual run during the day.
 
 ### --all-emails for a second independent consumer of the same mailbox (2026-09-30)
 **Problem:** Ian plans to run `daily_update.py` manually on his Mac, against
