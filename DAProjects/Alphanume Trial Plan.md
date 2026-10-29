@@ -238,6 +238,56 @@ completed with no HTTP errors (`~/data/alphanume.db`, 560 MB).
   request (41467e4), which had made the 15:35 NDM capture fail with
   "database is locked" (rerun by hand at 15:54).
 
+## Day 2 results (2026-10-28, New York time)
+
+**Live captures** all arrived with no errors: NDM 5 (10-27 and 10-28),
+Pre-Market Drop 2 (10-28 09:05 and 09:35), Risk Regime 1 (10-28). Against
+the history pull, for the dates both cover: **no revisions**. Every
+difference is an outcome field filling in (NULL to a value) when expected:
+NDM `return`/`absolute_move` after the trade day's close; Pre-Market Drop
+`intraday_return_pct` after the close and `return_lead_1d` a day later.
+Fields that fill in later than the trial lasts (`return_lead_5d`/`30d`)
+aren't covered. Dilution's live captures start 2026-10-28 23:15.
+
+**Gaps and duplicates:** no duplicate keys or rows in any dataset. NDM has
+all 687 sessions, 5 picks each. Pre-Market Drop has no list on 2026-05-20
+and 2026-09-04, and 1 to 27 names a day (median about 10). Risk Regime has
+no label on 2026-06-29 and 2026-08-26.
+
+**Tickers EODHD doesn't know** (`eodhd_budget.py`): NDM 0, QGMI 0,
+Pre-Market Drop 17 (144 events), Reverse Splits 156 (168 events, mostly
+OTC), Dilution 6 (7). Budget unchanged from day 1.
+
+**IG cover**, today's IG file (2026-10-28) via `ig_margins_resolved`;
+"open" = `new_positions` Yes, "shortable" = also `shortable` Yes. The
+current file omits names delisted since, so the "all" rows understate
+older events; the last 90 days are the fairer figure.
+
+| Dataset | Events | Listed | Open | Shortable | Median borrow |
+|---|---|---|---|---|---|
+| NDM, all / last 90 days | 3,435 / 310 | 68% / 50% | 56% / 38% | 42% / 35% | 0.8% |
+| QGMI, all / since 2026-07 | 1,180 / 40 | 76% / 70% | 73% / 70% | 72% / 62% | 0.8% |
+| Pre-Market Drop, all / last 90 days | 6,408 / 398 | 62% / 64% | 1% / 0% | 1% / 0% | 1.4% |
+| Dilution (dilutive), all / last 90 days | 520 / 55 | 69% / 75% | 5% / 5% | 3% / 2% | 1.4% |
+| Reverse Splits, all / last 90 days | 3,986 / 311 | 37% / 48% | 3% / 1% | 2% / 1% | 1.5% |
+
+IG lists most of the three short strategies' names but allows no new
+positions in almost any of them: through IG, Pre-Market Drop, Dilution and
+Reverse Splits are close to untradeable.
+
+**Outcome fields:**
+- **Pre-Market Drop:** 53% of names fell 5% or more open to close (mean
+  -3.1%, median -6.1%). The ranking works, in order: rank 1 65% (median
+  -12.3%), ranks 2-3 60%, 4-10 50%, 11+ 46%; `prob_drop` 0.8+ 70%, 0.5-0.6
+  48%. `intraday_return_pct` is EODHD's open-to-close exactly (19 of 20
+  sampled; the 20th, HCTI 2025-09-04, is EODHD's bar opening at its close).
+- **NDM:** `return` is **close-to-close** (the pick date's close to the
+  trade day's close), not open-to-close: sampled against EODHD, median
+  difference 0.07 points close-to-close against 2.8 open-to-close (19 of 20;
+  WOLF's fetch failed, a rename). So it includes the overnight gap, which
+  an ORB entered after the open doesn't trade. `absolute_move` is exactly
+  `|return|`; mean return +0.15%, 45% positive, median absolute move 4.8%.
+
 ## Pull list
 
 | Project | Alphanume datasets | EODHD data |
