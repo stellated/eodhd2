@@ -2032,6 +2032,22 @@ subscribing is then an analysis-project decision.
   call budget and the db growth rate);
 - whether the endpoint paginates, and how.
 
+### Analysis runs on the Mac; extracts go through OneDrive (2026-10-28)
+**Problem:** mars has 961 MB of RAM and one CPU. This session alone uses
+about 390 MB; one analysis Claude session next to it already runs in swap,
+two get background jobs killed (the IG parse was, on 2026-10-28), and three
+would put the scheduled jobs at risk. Disk was a lesser limit once old
+scratch copies were cleared (12 GB free).
+
+**Decision (Ian):** mars stays the wrangler (this repo, the timers, all
+fetching, `sda.db`, `alphanume.db`, building extracts); the analysis repos
+and their sessions run on the Mac. Each extract is built on mars one at a
+time, checked, uploaded to `onedrive:Data/StockDataAnalytics/extracts/<repo>/`
+and deleted locally; the Mac copies it out of its OneDrive folder into the
+repo's `data/` before opening it. Proposals still arrive by git: pull the
+analysis repo on mars and read it. The plan and steps are in
+`~/analysis/analysis-common/project/move-to-mac.md`.
+
 ### Alphanume trial capture: raw responses first, parse later (2026-10-23)
 **Context:** alphanume now offers a 3-day free trial with full Pro access
 (see `DAProjects/Alphanume Trial Plan.md`). Nothing is reachable without a
