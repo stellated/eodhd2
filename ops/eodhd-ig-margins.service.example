@@ -5,7 +5,7 @@
 # absolute paths -- see doc/DESIGN_DECISIONS.md ("IG tiered margins").
 
 [Unit]
-Description=Monthly IG tiered-margin download/archive/load
+Description=Daily IG tiered-margin download/archive/load
 Wants=network-online.target
 After=network-online.target
 
