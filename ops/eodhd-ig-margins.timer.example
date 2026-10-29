@@ -4,14 +4,14 @@
 # gitignored alongside it mainly so the set stays together.
 
 [Unit]
-Description=Run eodhd-ig-margins on the first of each month
+Description=Run eodhd-ig-margins daily
 
 [Timer]
-# Matches the cadence of its predecessor's monthly archive on the old
-# "nebula" machine (first day of each month) -- see
-# doc/DESIGN_DECISIONS.md ("IG tiered margins"). No particular review
-# window to hit, so this just runs at a quiet local hour.
-OnCalendar=*-*-01 03:00:00
+# Daily (Ian, 2026-10-28): IG regenerates the file every day, about
+# 23:00 UTC, and keeps no past versions, so a day not downloaded is lost.
+# 21:00 New York is after that in both EDT and EST, and clear of the
+# 04:00 tips/price runs. A run that finds no new version pushes nothing.
+OnCalendar=*-*-* 21:00:00
 Persistent=true
 RandomizedDelaySec=10m
 

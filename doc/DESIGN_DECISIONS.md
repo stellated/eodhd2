@@ -1086,6 +1086,43 @@ generated it) rather than the CDN's Last-Modified, which for the
 already loaded (`already_loaded()`) writes nothing and deletes the
 download so it isn't archived either.
 
+### Daily IG snapshots: old mars's copies loaded, and a daily download (2026-10-28)
+**Found:** decommissioning the old mars, Ian found 928 copies of IG's file
+(2023-03-06 to 2025-10-05, the old marketdatasystems.com copy, downloaded
+daily). Grouped by the workbook's created time, they are 358 versions not
+yet loaded, near-daily from 2023-03-06 to 2024-04-10; the 543 files from
+2024-04-11 on are all the frozen 2024-04-10 version, so the 2024-04 to
+2025-10 gap stays. All 371 versions (with the archive's 13) parse, all are
+the retail sheet (US median tier-1 rate 20%).
+
+**How much moves day to day** (median per version): about 1,700 AU/US
+borrow rates, about 50 shortable flags, about 13 tier-1 limits and rates,
+1-2 tickers added or removed. One oddity: 2023-07-12 to 2023-07-19, about
+1,470 US tickers carry a flat 5.16% borrow rate, then go back; it's in IG's
+own files and was loaded as-is (`doc/LIMITATIONS.md` §6).
+
+**Decision (Ian): keep every daily version, and download daily from now
+on.** Point-in-time borrow and shortable data is the reason to keep IG
+history at all, and thinning to weekly or monthly throws away exactly the
+changes that matter for a trade on a given day. Cost: 3.28M rows; `sda.db`
+went from 1.44 GB to 1.89 GB. All 358 were loaded through the same
+`parse_tiered_spreadsheet()`/`write_to_sqlite()`, one file per process
+(mars's memory), `download_date` from the file name. The files moved from
+`tiered/incoming/` into `tiered/` under their own names.
+
+- **Two versions on one date:** `source_modified` is a date, and IG twice
+  generated two versions on the same UTC date (2023-03-26; 2024-03-31,
+  one of them already loaded as 2024-04-01). `already_loaded()` would have
+  skipped the second of each, so the load deduplicated by the full created
+  timestamp instead. Both are kept, under different `download_date`s. The
+  daily job still uses `already_loaded()`, which can only skip a genuinely
+  new version if IG generates two in one day; not worth more machinery.
+- **Daily timer:** `eodhd-ig-margins.timer` runs at 21:00 New York, after
+  IG's ~23:00 UTC generation in both EDT and EST, and clear of the 04:00
+  runs. `run_ig_margins.sh` now skips the push when the script wrote
+  nothing (it deletes the download in that case), so an unchanged day
+  doesn't re-upload the db.
+
 ---
 
 ## outcomes design (2026-10-07)
@@ -2029,7 +2066,24 @@ there's no remote copy to race against.
 
 **Timers** (`eodhd-alphanume-*.timer`, New York time, trial days only):
 Pre-Market Drop Risk 09:05 and 09:35, Risk Regime 10:15, Next-Day Movers
-15:35 and 16:35.
+15:35 and 16:35, and from 2026-10-28 Dilution 23:15 and 08:00 (its rows
+appear in a nightly batch at about 23:00 ET).
+
+**Fields filled in after the event (Ian, 2026-10-28).** Some datasets
+update a row after it's first published: Dilution's `became_effective`,
+`effective_date` and `offering_withdrawn` fill in later (896 of 926 rows
+have a `last_updated` after their filing date), and NDM's
+`return`/`absolute_move` fill in after the trade day. When parsing for an
+analysis repo:
+- a field known only later carries an **available date** column (when it
+  became known: e.g. `effective_date` for `became_effective`, the trade
+  day's close for NDM's `return`), so the analysis can use it only from
+  that date;
+- a field whose available date can't be identified is **withheld** from
+  the extract, not delivered with a caveat.
+
+Which fields change is established by comparing live captures with later
+ones (and with the history pull), not assumed.
 
 ### EODHD budget for the alphanume datasets (2026-10-23)
 **Context:** how many EODHD calls, and how much storage, the alphanume

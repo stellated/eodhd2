@@ -651,7 +651,7 @@ months ago is long past its window being "still open".
 for the full batching/state-advance design and why the ticker-alias
 research this surfaces stays a manual step.
 
-## scripts/get_ig_margins.py — monthly IG tiered-margin load (added 2026-10-12)
+## scripts/get_ig_margins.py — daily IG tiered-margin load (added 2026-10-12)
 
 Downloads IG's tiered-margin spreadsheet and loads a cleaned, AU/US-only
 subset into `sda.db`'s `ig_margins` table (PK `(code, download_date)` --
@@ -666,7 +666,7 @@ the old script this was adapted from:
   tickers, not a genuine per-security data point) -- `tier1_limit`/
   `tier1_rate` are set `NULL` for these rows rather than "corrected".
 
-`ops/run_ig_margins.sh` (its own monthly `eodhd-ig-margins.timer`,
+`ops/run_ig_margins.sh` (its own daily `eodhd-ig-margins.timer`, 21:00 New York,
 independent of the weekday/Saturday/Sunday schedule) pulls/pushes the
 same `sda.db` used by `run_daily_update.sh` -- both wrappers now share
 their pull/push/staleness-check mechanism via `ops/lib_rclone_sync.sh`
@@ -679,9 +679,11 @@ design.
 
 **`source_modified`** is when IG generated the file (the workbook's own
 created time). Snapshots: 2022-01-17 and 2025-10-07 (Wayback captures),
-monthly 2023-08-22 to 2024-05-01 (the old copy then froze at 2024-04-10),
-and from 2026-10-23 IG's own, current copy (`TIERED_URL`). A run that
-finds a version already loaded writes nothing.
+daily 2023-03-06 to 2024-04-10 (Ian's old-mars copies plus nebula's
+monthly ones; the old copy then froze at 2024-04-10), and from 2026-10-23
+IG's own, current copy (`TIERED_URL`), daily since 2026-10-29. A run that
+finds a version already loaded writes nothing, and the wrapper then skips
+the push.
 `ig_margins_resolved` is the table to join on: per snapshot, a symbol
 finds IG's row under that symbol, or via `ticker_aliases` the row under
 an older symbol (file predates the rename) or a newer one (file postdates

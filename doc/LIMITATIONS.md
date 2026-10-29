@@ -49,17 +49,28 @@
   newsletter's rendering has changed in a way that would invalidate this
   estimate.
 
-## 6. IG margins: no point-in-time history before 2026-10-23
+## 6. IG margins: point-in-time only where a day's file was kept
 - IG keeps no past versions, so `ig_margins` has only the snapshots we
-  could recover, with gaps of 21 months (2022-01 to 2023-08) and 18 months
+  could recover, with gaps of 14 months (2022-01 to 2023-03) and 18 months
   (2024-04 to 2025-10).
-- Real snapshots (by `source_modified`): 2022-01-17, monthly 2023-08-21
-  to 2024-04-10, 2025-10-06, then 2026-10-22 on (`source_modified` is
-  when IG generated the file; `download_date` when we got it).
-- So there's no IG data as of a 2026 tip's own date. The 2024 file is too old
-  for recent listings; the current one omits stocks delisted since the
-  tip (survivorship), and borrow rates and shortable flags change over
-  time.
+- Real snapshots (by `source_modified`): 2022-01-17; daily 2023-03-06 to
+  2024-04-10 (Ian's old-mars copies, loaded 2026-10-28; a handful of
+  missing days, the longest 15 in 2024-02); 2025-10-06; then 2026-10-22
+  on, downloaded daily from 2026-10-29 (`source_modified` is when IG
+  generated the file; `download_date` when we got it).
+- `source_modified` is a date, and twice IG generated two versions on the
+  same UTC date (2023-03-26, 2024-03-31): both are kept, under different
+  `download_date`s.
+- Day to day, about 1,700 AU/US borrow rates change, about 50 shortable
+  flags flip, and a dozen tier-1 limits or rates move, so a snapshot
+  weeks away from an event can be wrong about it.
+- **2023-07-12 to 2023-07-19:** about 1,470 US tickers carry a flat 5.16%
+  borrow rate, then return to their usual rates (0.9% for most). It's in
+  IG's own files, loaded as-is; treat that week's borrow rates with
+  suspicion.
+- The 2024 files are too old for recent listings; the current one omits
+  stocks delisted since (survivorship), so there's no IG data as of a tip
+  date between 2024-04 and 2025-10, or before 2026-10-22 in 2026.
 - `ig_margins_resolved` follows renames both ways, but only those in
   `ticker_aliases`, so coverage is understated for unresearched renames.
 

@@ -1,0 +1,19 @@
+# Copy to ops/eodhd-alphanume-dilution.timer (drop the .example), then symlink or copy
+# into /etc/systemd/system/ and `systemctl enable --now eodhd-alphanume-dilution.timer`
+# for the trial days only. Times are New York time. Gitignored alongside
+# eodhd-alphanume-live@.service.
+
+[Unit]
+Description=Capture Dilution (S-1 filings) after its nightly 23:00 ET update, and again next morning
+
+[Timer]
+# Added 2026-10-28: rows appear in a batch at about 23:00 ET on the filing
+# date, and fields such as became_effective fill in later. Comparing each
+# row as first published with later captures shows which fields change
+# after the filing night (look-ahead for ds1).
+Unit=eodhd-alphanume-live@dilution.service
+OnCalendar=Mon..Fri *-*-* 23:15:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 08:00:00 America/New_York
+
+[Install]
+WantedBy=timers.target

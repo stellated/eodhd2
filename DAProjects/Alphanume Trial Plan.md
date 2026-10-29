@@ -279,6 +279,10 @@ Reverse Splits and Dilutive S-1. Each gets:
   no history, so the snapshots are 2022-01, monthly 2023-08 to 2024-04,
   2025-10 and monthly from 2026-10; a pick is matched to the nearest one,
   not to its own date; and only researched renames have aliases.
+  (Updated 2026-10-28: daily 2023-03 to 2024-04, and daily from 2026-10-22.)
+- **Fields filled in later** carry an available date, or are withheld if
+  it can't be identified (`doc/DESIGN_DECISIONS.md`, "Alphanume trial
+  capture"). Dilution is captured live from 2026-10-28 to find which.
 - **A README** with Ian's main question and data list from
   `Alphanume Trading Strategies.md`.
 

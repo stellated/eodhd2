@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wrapper for the monthly eodhd-ig-margins systemd service: pulls the same
+# Wrapper for the daily eodhd-ig-margins systemd service: pulls the same
 # canonical db used by run_daily_update.sh (sda.db), runs
 # scripts/get_ig_margins.py against it, pushes it back, then archives the
 # raw downloaded spreadsheet (every country, not just AU/US) to remote
@@ -59,6 +59,16 @@ pull_db
 
 "${REPO_DIR}/.venv/bin/python" "${REPO_DIR}/scripts/get_ig_margins.py" \
     --db-path "${DB_PATH}" --xlsx-dir "${XLSX_DIR}"
+
+# get_ig_margins.py deletes the download when IG's file is a version
+# already loaded, and writes nothing. Then there's nothing to push or
+# archive: skip the push rather than re-upload an unchanged 1.4 GB db
+# every day (and race the other jobs for no reason).
+if ! compgen -G "${XLSX_DIR}/*.xlsx" > /dev/null; then
+    echo "[daily-update] no new version of IG's file -- nothing to push"
+    rm -rf "${WORK_DIR}"
+    exit 0
+fi
 
 echo "[daily-update] pushing db back to ${RCLONE_REMOTE}"
 safe_push
