@@ -352,6 +352,20 @@ variants are built on the analysis side.
 
 ## Go/no-go for a paid subscription
 
+**Access ended at cancellation, not at the trial's end.** Ian cancelled on
+2026-10-28; from 23:38:55 ET every request returned HTTP 403
+`PRO_SUBSCRIPTION_REQUIRED`, although the subscription shows as expiring
+on 31 October. So the day-3 checks (re-pulling recent history to compare
+with the live captures, the 08:00 Dilution capture) couldn't run: the
+point-in-time evidence is the day-2 comparison (no revisions over two
+days), and Dilution has one live capture (2026-10-28 23:15). A gap pull of
+the per-ticker datasets for the SDA tips was running at the cutoff: market
+cap finished (all 2,292 tipped tickers), Filing Intensity reached 1,093 of
+2,292, Wikipedia Views stayed at 160 (QGMI's tickers only). Its 296
+refused requests are stored as errors; their windows stay incomplete.
+`alphanume.db` (1.46 GB) was copied to OneDrive at 23:44 ET. The live
+timers fail from now on and should be disabled.
+
 **Decision (Ian, 2026-10-28): no-go.** Cancel before the trial converts
 (Friday 2026-10-30 15:00 ET = Saturday 06:00 Melbourne). The full history
 of every dataset is captured; a subscription would add only live lists,
