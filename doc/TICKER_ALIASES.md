@@ -64,6 +64,7 @@ as 5m bars too (see `DESIGN_DECISIONS.md`, "Intraday cash-out bars").
 | APLS.US | 41.03 | 2026-05-14 | 2026-10-14 | 2026-04-24 | Apellis acquired by Biogen via cash tender ($41.00 + a CVR up to $4.00, excluded since it isn't priced or tradeable). Tender accepted 2026-05-14. Last real close 41.03 matches the deal price. |
 | SLNO.US | 53.01 | 2026-05-19 | 2026-10-14 | 2026-04-23 | Soleno acquired by Neurocrine Biosciences, all-cash tender ($53.00), effective 2026-05-18. Last real close 53.01 matches the deal price. |
 | NUVL.US | 124.00 | 2026-07-15 | 2026-10-20 | 2026-06-19, 2026-06-25 | Nuvalent acquired by GSK, $124.00 cash tender; merger completed and delisted 2026-07-15 (8-K). Last real trade 07-14, close 123.96; EODHD then repeats 123.96 at zero volume. Both outcomes closed by time exit before the deal and are unchanged; the alias only completes daily coverage. |
+| WBD.US | 31.01666668 | 2026-10-06 | 2026-10-30 | 2026-09-11, 2026-10-02 | Warner Bros. Discovery acquired by Paramount Skydance, all cash ($31.00 agreed 2026-02-27, plus a ticking fee; $31.01666668 a share per insiders' Form 4s), completed 2026-10-06. Pinned at 30.84-30.95 for weeks; last real close 30.95 on 2026-10-05, on 436M shares (about 10x normal). Both outcomes unchanged (09-11 `closed_target` on 09-21; 10-02 `closed_time` at the 10-05 close); the alias only completes coverage. |
 
 ## Investigated, no alias added
 
