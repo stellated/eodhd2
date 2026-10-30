@@ -17,6 +17,7 @@ from src.eodhd_io import (
     _eodhd_fetch_csv,
     _fetch_daily_resolved,
     _fetch_intraday_resolved,
+    _log_short_window,
     _NoIntradayData,
     _TransientEodhdResponse,
     add_local_time,
@@ -454,6 +455,41 @@ def test_tips_skips_failing_tip_and_continues(
 
     assert list(pdf["code"]) == ["GOOD.US"]
     assert any("BAD.US" in rec.message for rec in caplog.records)
+
+
+# --- Tests for tips()'s short-window log line ---
+def _sessions(start, n):
+    return [start + timedelta(days=i) for i in range(n)]
+
+
+@pytest.mark.parametrize("n_after, still_open, expected", [
+    (20, False, None),         # full window: nothing logged
+    (19, True, "INFO"),        # still filling in: expected, not a warning
+    (19, False, "WARNING"),    # window closed and still short
+])
+def test_log_short_window_level(caplog, n_after, still_open, expected):
+    tip_date = date(2026, 9, 1)
+    actual_after = _sessions(tip_date, n_after + 1)  # tip day plus n_after
+    cal_end = date.today() + timedelta(days=1 if still_open else -1)
+    with caplog.at_level("INFO"):
+        _log_short_window("X.US", tip_date, 20, actual_after, cal_end)
+    assert [r.levelname for r in caplog.records] == ([expected] if expected else [])
+
+
+def test_log_short_window_does_not_count_tip_day(caplog):
+    tip_date = date(2026, 9, 1)
+    with caplog.at_level("INFO"):
+        _log_short_window("X.US", tip_date, 20, _sessions(tip_date, 20), date(2026, 1, 1))
+    assert "covers 19 of 20 trading days after 2026-09-01" in caplog.records[0].message
+
+
+def test_log_short_window_tip_day_not_a_session(caplog):
+    """A holiday tip starts from the next session; all 20 count."""
+    tip_date = date(2026, 7, 3)
+    with caplog.at_level("INFO"):
+        _log_short_window("X.US", tip_date, 20, _sessions(tip_date + timedelta(days=3), 20),
+                          date(2026, 1, 1))
+    assert not caplog.records
 
 
 @mock.patch("src.eodhd_io.fetch_intraday")

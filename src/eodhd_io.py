@@ -1116,6 +1116,23 @@ def _intraday_confirmed_unavailable(
 # NEW: tips()
 # ---------------------------------------------------------------------------
 
+def _log_short_window(code: str, tip_date: date, n2: int, actual_after: list,
+                      cal_end: date) -> None:
+    """Log a tip whose fetched data has fewer than n2 trading days after
+    tip_date. actual_after holds tip_date itself when it was a session, so
+    it isn't counted. While the window is still open (cal_end not yet past)
+    a short window is expected -- every still-open tip is short on every
+    run -- so that's INFO; a closed one is a WARNING, as for
+    unresolved_tips().
+    """
+    days_after = sum(1 for d in actual_after if d > tip_date)
+    if days_after >= n2:
+        return
+    level = logging.INFO if cal_end >= date.today() else logging.WARNING
+    logging.log(level, f"Fetched data for {code} covers {days_after} of {n2} trading "
+                       f"days after {tip_date}.")
+
+
 def tips(
     db: "Database",
     tip_list: list[tuple[str, date]],
@@ -1211,13 +1228,7 @@ def tips(
                 pdf = pdf[
                     (pdf["local_date"] >= cal_start) & (pdf["local_date"] <= end_date)
                 ].reset_index(drop=True)
-
-                # Log warning if fetch window mismatch
-                if len(actual_after) < n2 + 1:
-                    logging.warning(
-                        f"Fetched data for {code} does not cover {n2} days after {tip_date}. "
-                        f"Actual: {len(actual_after)} days."
-                    )
+                _log_short_window(code, tip_date, n2, actual_after, cal_end)
 
             else:
                 pdf = _fetch_daily_resolved(db, code, db.api_token, cal_start, cal_end)
@@ -1229,13 +1240,7 @@ def tips(
                 pdf = pdf[
                     (pdf["date"] >= cal_start) & (pdf["date"] <= end_date)
                 ].reset_index(drop=True)
-
-                # Log warning if fetch window mismatch
-                if len(actual_after) < n2 + 1:
-                    logging.warning(
-                        f"Fetched data for {code} does not cover {n2} days after {tip_date}. "
-                        f"Actual: {len(actual_after)} days."
-                    )
+                _log_short_window(code, tip_date, n2, actual_after, cal_end)
 
             if not pdf.empty:
                 pandas2sqlite(pdf, db.conn, tablename)
