@@ -353,6 +353,22 @@ def test_fetch_daily_error(mock_fetch):
         fetch_daily("AAPL.US", "fake_token")
 
 
+@mock.patch("src.eodhd_io._fetch_with_retry")
+def test_fetch_daily_error_redacts_token(mock_fetch):
+    """requests puts the URL, token included, in an HTTPError's message."""
+    mock_response = mock.MagicMock()
+    mock_response.raise_for_status.side_effect = requests.HTTPError(
+        "404 Client Error: Not Found for url: "
+        "https://eodhd.com/api/eod/AAPL.US?api_token=secret123&fmt=csv")
+    mock_fetch.return_value = mock_response
+
+    with pytest.raises(requests.HTTPError) as exc:
+        fetch_daily("AAPL.US", "secret123")
+    assert "secret123" not in str(exc.value)
+    assert "api_token=REDACTED" in str(exc.value)
+    assert exc.value.__suppress_context__
+
+
 # --- Tests for the transient-bad-response retry (200 OK, non-CSV body) ---
 @mock.patch("time.sleep")
 @mock.patch("src.eodhd_io._fetch_with_retry")

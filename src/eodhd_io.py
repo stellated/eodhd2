@@ -710,7 +710,12 @@ def _eodhd_fetch_csv(url: str, required_columns: set) -> pd.DataFrame:
     # error responses (4xx/5xx) -- a 401/404 fails fast instead of retrying
     # 3 times against a request that will never succeed.
     resp = _fetch_with_retry(url, timeout=30)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        # requests puts the full URL, token included, in the message; `from
+        # None` keeps the original out of logged tracebacks too.
+        raise requests.HTTPError(_redact_token(str(e)), response=resp) from None
     try:
         raw = pd.read_csv(io.StringIO(resp.text))
     except pd.errors.ParserError as e:
