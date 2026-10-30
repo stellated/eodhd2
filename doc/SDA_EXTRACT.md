@@ -128,4 +128,4 @@ bars (EMF, AWP, CHY, JRS: closed-end funds EODHD has no 5m data for).
 **IG files:** 2025-10-06 (1,620 tipped codes listed), 2026-10-22 (1,458),
 2026-10-29 (1,456), 2026-10-30 (1,454), by `source_modified`.
 
-**`ticker_aliases`:** 25 rows, of eodhd2's 28: NISN, XWIN and WBD concern only hold-out tips and are left out, here and in `TICKER_ALIASES.md`.
+**`ticker_aliases`:** 25 rows, of eodhd2's 28: NISN, XWIN and WBD concern only hold-out tips and are left out. `TICKER_ALIASES.md` also drops SATS, whose listed tips are all hold-out; its alias row stays in the table because SATS was also tipped on 2026-05-20, a window that ends before the rename.
