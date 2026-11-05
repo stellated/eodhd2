@@ -33,10 +33,12 @@ def test_five_years_before_29_february():
 
 
 def test_venue():
-    assert venue("NASDAQ", "US0378331005") == "listed"
-    assert venue("PINK", "US1234567890") == "inferred"  # listed then, OTC since
-    assert venue("OTCQX", "CH0038863350") == "foreign_otc"
-    assert venue("PINK", None) == "foreign_otc"
+    assert venue("AAPL", "NASDAQ", "US0378331005", "Apple Inc.") == "listed"
+    assert venue("SBNY", "PINK", "US82669G1040", "Signature Bank") == "inferred"  # failed since
+    assert venue("RHHBY", "OTCQX", "US7711951043", "Roche Holding Ltd ADR") == "foreign_otc"
+    assert venue("TOELY", "PINK", "US8891101027", "Tokyo Electron Ltd PK") == "foreign_otc"
+    assert venue("NESN", "OTCQX", "CH0038863350", "Nestle") == "foreign_otc"
+    assert venue("ABCD", "PINK", None, None) == "foreign_otc"
 
 
 def test_band_lower_bounds():

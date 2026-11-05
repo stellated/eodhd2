@@ -35,6 +35,7 @@ import io
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -66,6 +67,14 @@ MIN_TURNOVER = 1e6
 BANDS = [("above_50m", 50e6), ("10m_50m", 10e6), ("1m_10m", 1e6)]  # lower bounds
 LISTED = {"NASDAQ", "NYSE", "AMEX", "NYSE MKT", "NYSE ARCA", "BATS"}
 QUOTA_STOP = 85_000
+# Common stocks with bulk bars but in neither symbol list (checked by hand,
+# 2026-11-05: EODHD's search has no US entry for them either). Every other
+# unlisted code passing the screen was foreign OTC, an ETF or a preferred.
+UNLISTED_COMMON = {"CRNX": "Crinetics Pharmaceuticals", "HLX": "Helix Energy Solutions",
+                   "LUNA": "Luna Innovations", "NKLAQ": "Nikola", "TBPH": "Theravance Biopharma",
+                   "USEG": "U.S. Energy Corp"}
+# Bulk prices that are plainly wrong: HLAN closes at about 19,800 in 2022.
+BAD_DATA = {"HLAN"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                     force=True)
@@ -102,11 +111,14 @@ def five_year_dates(sessions: list[date], start: date) -> list[date]:
     return [s for s in sessions if s <= cut][-FIVE_YEAR_SESSIONS:]
 
 
-def venue(exchange, isin) -> str:
-    """'listed', 'inferred' (OTC now, American ISIN) or 'foreign_otc'."""
+def venue(code, exchange, isin, name) -> str:
+    """'listed', 'inferred' (OTC now, an American company) or 'foreign_otc'.
+    An OTC ADR has an American ISIN too, so it's caught by its code (four
+    letters plus Y or F, the OTC convention) or its name."""
     if exchange in LISTED:
         return "listed"
-    if isinstance(isin, str) and isin.startswith("US"):
+    adr = bool(re.fullmatch(r"[A-Z]{4}[YF]", code)) or "ADR" in str(name)
+    if isinstance(isin, str) and isin.startswith("US") and not adr:
         return "inferred"
     return "foreign_otc"
 
@@ -208,17 +220,22 @@ def symbol_info(db: sqlite3.Connection) -> pd.DataFrame:
     return s.set_index("code")
 
 
-def optionable_tickers(alpha: sqlite3.Connection, snap: date) -> set[str]:
-    """EODHD-form codes (no suffix) in the latest OT snapshot on or before `snap`."""
+def optionable_by_period(alpha: sqlite3.Connection) -> dict[int, set[str]]:
+    """Per period, the EODHD-form codes (no suffix) in the latest OT
+    snapshot on or before its start. Only those snapshots are kept."""
     by_date: dict[str, set[str]] = {}
-    for (body,) in alpha.execute(
-            "SELECT r.body FROM raw_responses r JOIN windows w ON w.id = r.window_id "
-            "WHERE w.job = 'optionable' AND w.capture = 'history' "
-            "AND w.completed_at IS NOT NULL AND w.superseded = 0"):
-        for row in json.loads(body)["data"]:
-            if row["date"] <= snap.isoformat():
+    bodies = [b for (b,) in alpha.execute(
+        "SELECT r.body FROM raw_responses r JOIN windows w ON w.id = r.window_id "
+        "WHERE w.job = 'optionable' AND w.capture = 'history' "
+        "AND w.completed_at IS NOT NULL AND w.superseded = 0")]
+    dates = sorted({row["date"] for b in bodies for row in json.loads(b)["data"]})
+    snap = {p: max(d for d in dates if d <= start.isoformat()) for p, start, _ in PERIODS}
+    keep = set(snap.values())
+    for b in bodies:
+        for row in json.loads(b)["data"]:
+            if row["date"] in keep:
                 by_date.setdefault(row["date"], set()).add(row["ticker"].upper().replace(".", "-"))
-    return by_date[max(by_date)]
+    return {p: by_date[d] for p, d in snap.items()}
 
 
 def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
@@ -233,6 +250,7 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
     db.execute("""CREATE TABLE screen_dropped (period INTEGER, code TEXT, reason TEXT,
         detail TEXT, PRIMARY KEY (period, code))""")
     summary = []
+    ot_by_period = optionable_by_period(alpha)
     for period, start, end in PERIODS:
         sdates, fdates = screen_dates(sessions, start), five_year_dates(sessions, start)
         missing = [d for d in sdates + fdates if d.isoformat() not in have]
@@ -241,15 +259,20 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
             continue
         screen = sdates[-1].isoformat()
         q = ",".join("?" * len(sdates))
-        rows = pd.read_sql(f"SELECT date, code, cl, vo FROM bulk_eod WHERE date IN ({q})", db,
-                           params=[d.isoformat() for d in sdates])
-        on_screen = rows[(rows["date"] == screen) & (rows["vo"] > 0)].set_index("code")
+        on_screen = pd.read_sql("SELECT code, cl, vo FROM bulk_eod WHERE date = ? AND vo > 0",
+                                db, params=[screen]).set_index("code")
         dropped = []
+        dropped += [(c, "bad_data", None) for c in on_screen.index if c in BAD_DATA]
+        on_screen = on_screen.drop([c for c in on_screen.index if c in BAD_DATA])
         info = syms.reindex(on_screen.index)
-        common = on_screen.index[info["type"] == "Common Stock"]
-        dropped += [(c, "not_in_symbol_lists", None) for c in on_screen.index[info["type"].isna()]]
+        unlisted = on_screen.index[info["type"].isna()]
+        common = on_screen.index[(info["type"] == "Common Stock")
+                                 | on_screen.index.isin(list(UNLISTED_COMMON))]
+        dropped += [(c, "not_in_symbol_lists", None) for c in unlisted
+                    if c not in UNLISTED_COMMON]
         cand = pd.DataFrame(index=common)
-        cand["venue"] = [venue(syms.at[c, "exchange"], syms.at[c, "isin"]) for c in common]
+        cand["venue"] = [venue(c, syms.at[c, "exchange"], syms.at[c, "isin"], syms.at[c, "name"])
+                         if c in syms.index else "listed" for c in common]
         dropped += [(c, "foreign_otc", syms.at[c, "exchange"])
                     for c in cand.index[cand["venue"] == "foreign_otc"]]
         cand = cand[cand["venue"] != "foreign_otc"]
@@ -257,7 +280,14 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
         dropped += [(c, "price_below_2", f"{p:.4f}")
                     for c, p in cand["close"].items() if p < MIN_PRICE]
         cand = cand[cand["close"] >= MIN_PRICE]
-        cand["median_turnover"] = median_turnover(rows[rows["code"].isin(cand.index)], sdates)
+        # only the candidates' 60 sessions: the whole market's don't fit in mars's memory
+        db.execute("DROP TABLE IF EXISTS temp.cand")
+        db.execute("CREATE TEMP TABLE cand (code TEXT PRIMARY KEY)")
+        db.executemany("INSERT INTO temp.cand VALUES (?)", [(c,) for c in cand.index])
+        rows = pd.read_sql(f"SELECT b.date, b.code, b.cl, b.vo FROM bulk_eod b "
+                           f"JOIN temp.cand USING (code) WHERE b.date IN ({q})", db,
+                           params=[d.isoformat() for d in sdates])
+        cand["median_turnover"] = median_turnover(rows, sdates)
         cand = cand[cand["median_turnover"] >= MIN_TURNOVER]
         five = {c for (c,) in db.execute(
             "SELECT DISTINCT code FROM bulk_eod WHERE vo > 0 "
@@ -265,17 +295,19 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
         dropped += [(c, "under_5_years", None) for c in cand.index if c not in five]
         cand = cand[cand.index.isin(five)]
         for group in duplicate_groups(rows[rows["code"].isin(cand.index)], sdates):
-            current = [c for c in group if syms.at[c, "listing"] == "current"]
+            current = [c for c in group if c in syms.index and syms.at[c, "listing"] == "current"]
             keep = (current or group)[0]
             dropped += [(c, "duplicate_of", keep) for c in group if c != keep]
             cand = cand.drop([c for c in group if c != keep])
-        ot = optionable_tickers(alpha, start)
+        ot = ot_by_period[period]
         cand["ot"] = cand.index.isin(ot).astype(int)
         cand["band"] = cand["median_turnover"].map(band)
         db.executemany("INSERT INTO eligible VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             (period, f"{c}.US", r.band, float(r.median_turnover), float(r.close), int(r.ot),
-             int(r.venue == "inferred"), syms.at[c, "exchange"], syms.at[c, "name"],
-             int(syms.at[c, "both"])) for c, r in cand.iterrows()])
+             int(r.venue == "inferred"),
+             syms.at[c, "exchange"] if c in syms.index else None,
+             syms.at[c, "name"] if c in syms.index else UNLISTED_COMMON[c],
+             int(syms.at[c, "both"]) if c in syms.index else 0) for c, r in cand.iterrows()])
         db.executemany("INSERT INTO screen_dropped VALUES (?, ?, ?, ?)",
                        [(period, f"{c}.US", reason, detail) for c, reason, detail in dropped])
         traded_codes = set(on_screen.index)
