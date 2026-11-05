@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""The screen for jml's sample (jml/proposals/eodhd2-jml.md): every US
+common stock trading at each period's start, by 60-session median
+turnover, before anything is drawn.
+
+  jml_screen.py fetch  --db-path ~/data/jml.db --alphanume-db ~/data/alphanume.db
+  jml_screen.py report --db-path ~/data/jml.db --alphanume-db ~/data/alphanume.db
+
+`fetch` stores, in jml.db (on mars, not sda.db):
+- `sessions`: SPY's trading days, 2014 to 2025 (1 call);
+- `symbols`: EODHD's current and delisted US symbol lists (2 calls);
+- `bulk_eod`: EODHD's bulk end-of-day for every session the screen needs
+  (100 calls each): the 60 sessions up to each screen date, and the 5
+  sessions up to 5 years before each period start.
+It's resumable (dates already stored are skipped) and stops before
+apiRequests passes QUOTA_STOP.
+
+`report` writes `eligible` (one row per eligible stock and period) and
+`screen_dropped` (why the rest went), and prints the counts per band.
+
+Venue: the symbol lists give a stock's current or last exchange, not its
+exchange on the screen date. A stock listed in 2019 that later fell to
+the pink sheets is PINK now, so filtering on exchange would drop the
+failures (survivorship). Listed venues are kept; an OTC-labelled common
+stock is kept if its ISIN is American (venue_inferred = 1), and dropped
+if it's foreign (foreign shares traded OTC).
+
+Five years: a stock qualifies if it traded on any of the 5 sessions up to
+the date 5 years before its period start. EODHD files history under the
+code it serves today (FB's 2019 bars are under META), so this matches
+the stock's own daily series.
+"""
+import argparse
+import io
+import json
+import logging
+import os
+import sqlite3
+import sys
+import time
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import requests
+from dotenv import load_dotenv
+
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+sys.path.insert(0, str(SRC_DIR))
+
+from eodhd_io import EODHD_BASE, _redact_token  # noqa: E402
+
+# (period, first day, last day); Ian, 2026-11-05
+PERIODS = [
+    (1, date(2019, 11, 1), date(2019, 12, 31)),
+    (2, date(2020, 2, 1), date(2020, 3, 31)),
+    (3, date(2020, 4, 1), date(2020, 5, 31)),
+    (4, date(2022, 4, 1), date(2022, 6, 30)),
+    (5, date(2023, 8, 1), date(2023, 9, 30)),
+    (6, date(2025, 4, 1), date(2025, 4, 30)),
+]
+SCREEN_SESSIONS = 60
+FIVE_YEAR_SESSIONS = 5
+MIN_PRICE = 2.0
+MIN_TURNOVER = 1e6
+BANDS = [("above_50m", 50e6), ("10m_50m", 10e6), ("1m_10m", 1e6)]  # lower bounds
+LISTED = {"NASDAQ", "NYSE", "AMEX", "NYSE MKT", "NYSE ARCA", "BATS"}
+QUOTA_STOP = 85_000
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    force=True)
+log = logging.getLogger("jml_screen")
+
+_DDL = [
+    "CREATE TABLE IF NOT EXISTS sessions (date TEXT PRIMARY KEY)",
+    """CREATE TABLE IF NOT EXISTS symbols (
+        code TEXT NOT NULL, listing TEXT NOT NULL CHECK (listing IN ('current', 'delisted')),
+        name TEXT, exchange TEXT, type TEXT, isin TEXT, PRIMARY KEY (code, listing))""",
+    """CREATE TABLE IF NOT EXISTS bulk_eod (
+        date TEXT NOT NULL, code TEXT NOT NULL, op REAL, hi REAL, lo REAL, cl REAL,
+        ac REAL, vo REAL, PRIMARY KEY (date, code)) WITHOUT ROWID""",
+    "CREATE TABLE IF NOT EXISTS bulk_dates (date TEXT PRIMARY KEY, rows INTEGER NOT NULL)",
+]
+
+
+def five_years_before(d: date) -> date:
+    try:
+        return d.replace(year=d.year - 5)
+    except ValueError:  # 29 February
+        return d.replace(year=d.year - 5, day=28)
+
+
+def screen_dates(sessions: list[date], start: date) -> list[date]:
+    """The SCREEN_SESSIONS sessions before `start`; the last is the screen date."""
+    before = [s for s in sessions if s < start]
+    return before[-SCREEN_SESSIONS:]
+
+
+def five_year_dates(sessions: list[date], start: date) -> list[date]:
+    """The FIVE_YEAR_SESSIONS sessions on or before 5 years before `start`."""
+    cut = five_years_before(start)
+    return [s for s in sessions if s <= cut][-FIVE_YEAR_SESSIONS:]
+
+
+def venue(exchange, isin) -> str:
+    """'listed', 'inferred' (OTC now, American ISIN) or 'foreign_otc'."""
+    if exchange in LISTED:
+        return "listed"
+    if isinstance(isin, str) and isin.startswith("US"):
+        return "inferred"
+    return "foreign_otc"
+
+
+def band(turnover: float):
+    for name, low in BANDS:
+        if turnover >= low:
+            return name
+    return None
+
+
+def median_turnover(rows: pd.DataFrame, dates: list[date]) -> pd.Series:
+    """Per code, the median of cl x vo over `dates`, a day with no bar
+    counting as 0 (it didn't trade)."""
+    t = rows.assign(to=rows["cl"] * rows["vo"]).pivot_table(
+        index="code", columns="date", values="to", aggfunc="first")
+    t = t.reindex(columns=[d.isoformat() for d in dates]).fillna(0.0)
+    return t.median(axis=1)
+
+
+def duplicate_groups(rows: pd.DataFrame, dates: list[date]) -> list[list[str]]:
+    """Codes whose closes are identical on every date: one stock listed
+    under two symbols (a rename EODHD serves under both)."""
+    c = rows.pivot_table(index="code", columns="date", values="cl", aggfunc="first")
+    c = c.reindex(columns=[d.isoformat() for d in dates]).round(4)
+    key = c.apply(lambda r: tuple(None if pd.isna(v) else v for v in r), axis=1)
+    groups = key.groupby(key).groups
+    return sorted(sorted(codes) for codes in groups.values() if len(codes) > 1)
+
+
+class Eodhd:
+    def __init__(self, token: str):
+        self.token = token
+
+    def get(self, path: str, **params) -> requests.Response:
+        url = f"{EODHD_BASE}/{path}"
+        for attempt in range(3):
+            try:
+                r = requests.get(url, params={"api_token": self.token, **params}, timeout=180)
+                r.raise_for_status()
+                return r
+            except requests.RequestException as e:
+                log.warning("%s: %s (attempt %d)", path, _redact_token(str(e)), attempt + 1)
+                time.sleep(10 * (attempt + 1))
+        raise RuntimeError(f"{path} failed three times")
+
+    def used(self) -> int:
+        return self.get("user", fmt="json").json()["apiRequests"]
+
+
+def all_sessions(db: sqlite3.Connection) -> list[date]:
+    return [date.fromisoformat(d) for (d,) in db.execute("SELECT date FROM sessions ORDER BY 1")]
+
+
+def fetch(db: sqlite3.Connection, api: Eodhd) -> None:
+    if not db.execute("SELECT 1 FROM sessions LIMIT 1").fetchone():
+        r = api.get("eod/SPY.US", fmt="json", **{"from": "2014-01-01", "to": "2025-12-31"})
+        db.executemany("INSERT INTO sessions VALUES (?)",
+                       [(b["date"],) for b in r.json() if b["volume"]])
+        db.commit()
+    if not db.execute("SELECT 1 FROM symbols LIMIT 1").fetchone():
+        for listing, extra in (("current", {}), ("delisted", {"delisted": 1})):
+            rows = api.get("exchange-symbol-list/US", fmt="json", **extra).json()
+            db.executemany("INSERT OR REPLACE INTO symbols VALUES (?, ?, ?, ?, ?, ?)",
+                           [(s["Code"], listing, s["Name"], s["Exchange"], s["Type"], s["Isin"])
+                            for s in rows])
+        db.commit()
+    sessions = all_sessions(db)
+    needed = sorted({d for _, start, _ in PERIODS
+                     for d in screen_dates(sessions, start) + five_year_dates(sessions, start)})
+    have = {d for (d,) in db.execute("SELECT date FROM bulk_dates")}
+    todo = [d for d in needed if d.isoformat() not in have]
+    log.info("%d bulk dates needed, %d to fetch", len(needed), len(todo))
+    for i, d in enumerate(todo):
+        if i % 20 == 0 and api.used() + 100 > QUOTA_STOP:
+            log.warning("stopping: apiRequests near %d; rerun after UTC midnight", QUOTA_STOP)
+            return
+        r = api.get("eod-bulk-last-day/US", date=d.isoformat(), fmt="csv")
+        df = pd.read_csv(io.StringIO(r.text), keep_default_na=False, na_values=[""])
+        df = df[df["Date"] == d.isoformat()]  # a stale row is the ticker's last bar, not this day's
+        db.executemany("INSERT OR REPLACE INTO bulk_eod VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                       df[["Date", "Code", "Open", "High", "Low", "Close", "Adjusted_close",
+                           "Volume"]].itertuples(index=False, name=None))
+        db.execute("INSERT OR REPLACE INTO bulk_dates VALUES (?, ?)", (d.isoformat(), len(df)))
+        db.commit()
+        if (i + 1) % 25 == 0:
+            log.info("%d/%d bulk dates", i + 1, len(todo))
+    log.info("bulk fetch complete")
+
+
+def symbol_info(db: sqlite3.Connection) -> pd.DataFrame:
+    """One row per code: the current listing if there is one, else the
+    delisted one; `both` marks a code in both lists (a reused symbol)."""
+    s = pd.read_sql("SELECT * FROM symbols", db)
+    listed = s.groupby("listing")["code"].apply(set)
+    both = listed.get("current", set()) & listed.get("delisted", set())
+    s = s.sort_values(["code", "listing"]).drop_duplicates("code", keep="first")  # 'current' first
+    s["both"] = s["code"].isin(both)
+    return s.set_index("code")
+
+
+def optionable_tickers(alpha: sqlite3.Connection, snap: date) -> set[str]:
+    """EODHD-form codes (no suffix) in the latest OT snapshot on or before `snap`."""
+    by_date: dict[str, set[str]] = {}
+    for (body,) in alpha.execute(
+            "SELECT r.body FROM raw_responses r JOIN windows w ON w.id = r.window_id "
+            "WHERE w.job = 'optionable' AND w.capture = 'history' "
+            "AND w.completed_at IS NOT NULL AND w.superseded = 0"):
+        for row in json.loads(body)["data"]:
+            if row["date"] <= snap.isoformat():
+                by_date.setdefault(row["date"], set()).add(row["ticker"].upper().replace(".", "-"))
+    return by_date[max(by_date)]
+
+
+def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
+    sessions = all_sessions(db)
+    have = {d for (d,) in db.execute("SELECT date FROM bulk_dates")}
+    syms = symbol_info(db)
+    db.execute("DROP TABLE IF EXISTS eligible")
+    db.execute("DROP TABLE IF EXISTS screen_dropped")
+    db.execute("""CREATE TABLE eligible (period INTEGER, code TEXT, band TEXT,
+        median_turnover REAL, close REAL, ot INTEGER, venue_inferred INTEGER,
+        exchange TEXT, name TEXT, reused_symbol INTEGER, PRIMARY KEY (period, code))""")
+    db.execute("""CREATE TABLE screen_dropped (period INTEGER, code TEXT, reason TEXT,
+        detail TEXT, PRIMARY KEY (period, code))""")
+    summary = []
+    for period, start, end in PERIODS:
+        sdates, fdates = screen_dates(sessions, start), five_year_dates(sessions, start)
+        missing = [d for d in sdates + fdates if d.isoformat() not in have]
+        if missing:
+            log.warning("period %d: %d bulk dates not fetched yet", period, len(missing))
+            continue
+        screen = sdates[-1].isoformat()
+        q = ",".join("?" * len(sdates))
+        rows = pd.read_sql(f"SELECT date, code, cl, vo FROM bulk_eod WHERE date IN ({q})", db,
+                           params=[d.isoformat() for d in sdates])
+        on_screen = rows[(rows["date"] == screen) & (rows["vo"] > 0)].set_index("code")
+        dropped = []
+        info = syms.reindex(on_screen.index)
+        common = on_screen.index[info["type"] == "Common Stock"]
+        dropped += [(c, "not_in_symbol_lists", None) for c in on_screen.index[info["type"].isna()]]
+        cand = pd.DataFrame(index=common)
+        cand["venue"] = [venue(syms.at[c, "exchange"], syms.at[c, "isin"]) for c in common]
+        dropped += [(c, "foreign_otc", syms.at[c, "exchange"])
+                    for c in cand.index[cand["venue"] == "foreign_otc"]]
+        cand = cand[cand["venue"] != "foreign_otc"]
+        cand["close"] = on_screen.loc[cand.index, "cl"]
+        dropped += [(c, "price_below_2", f"{p:.4f}")
+                    for c, p in cand["close"].items() if p < MIN_PRICE]
+        cand = cand[cand["close"] >= MIN_PRICE]
+        cand["median_turnover"] = median_turnover(rows[rows["code"].isin(cand.index)], sdates)
+        cand = cand[cand["median_turnover"] >= MIN_TURNOVER]
+        five = {c for (c,) in db.execute(
+            "SELECT DISTINCT code FROM bulk_eod WHERE vo > 0 "
+            f"AND date IN ({','.join('?' * len(fdates))})", [d.isoformat() for d in fdates])}
+        dropped += [(c, "under_5_years", None) for c in cand.index if c not in five]
+        cand = cand[cand.index.isin(five)]
+        for group in duplicate_groups(rows[rows["code"].isin(cand.index)], sdates):
+            current = [c for c in group if syms.at[c, "listing"] == "current"]
+            keep = (current or group)[0]
+            dropped += [(c, "duplicate_of", keep) for c in group if c != keep]
+            cand = cand.drop([c for c in group if c != keep])
+        ot = optionable_tickers(alpha, start)
+        cand["ot"] = cand.index.isin(ot).astype(int)
+        cand["band"] = cand["median_turnover"].map(band)
+        db.executemany("INSERT INTO eligible VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+            (period, f"{c}.US", r.band, float(r.median_turnover), float(r.close), int(r.ot),
+             int(r.venue == "inferred"), syms.at[c, "exchange"], syms.at[c, "name"],
+             int(syms.at[c, "both"])) for c, r in cand.iterrows()])
+        db.executemany("INSERT INTO screen_dropped VALUES (?, ?, ?, ?)",
+                       [(period, f"{c}.US", reason, detail) for c, reason, detail in dropped])
+        traded_codes = set(on_screen.index)
+        summary.append({
+            "period": period, "screen_date": screen, "traded": len(on_screen),
+            **{b: int((cand["band"] == b).sum()) for b, _ in BANDS},
+            "ot_eligible": int(cand["ot"].sum()),
+            "inferred": int((cand["venue"] == "inferred").sum()),
+            "foreign_otc": sum(r == "foreign_otc" for _, r, _ in dropped),
+            "under_5y": sum(r == "under_5_years" for _, r, _ in dropped),
+            "dupes": sum(r == "duplicate_of" for _, r, _ in dropped),
+            "unlisted": sum(r == "not_in_symbol_lists" for _, r, _ in dropped),
+            "ot_snapshot": len(ot), "ot_not_in_bulk": len(ot - traded_codes),
+        })
+    db.commit()
+    print(pd.DataFrame(summary).to_string(index=False))
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("action", choices=["fetch", "report"])
+    p.add_argument("--db-path", required=True, type=Path)
+    p.add_argument("--alphanume-db", type=Path, default=Path.home() / "data" / "alphanume.db")
+    args = p.parse_args()
+    db = sqlite3.connect(args.db_path)
+    for ddl in _DDL:
+        db.execute(ddl)
+    if args.action == "fetch":
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+        fetch(db, Eodhd(os.environ["EODHD_API_TOKEN"]))
+    else:
+        alpha = sqlite3.connect(f"file:{args.alphanume_db}?mode=ro", uri=True)
+        report(db, alpha)
+
+
+if __name__ == "__main__":
+    main()
