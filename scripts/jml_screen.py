@@ -85,6 +85,17 @@ UNLISTED_COMMON = {"CRNX": "Crinetics Pharmaceuticals", "HLX": "Helix Energy Sol
                    "USEG": "U.S. Energy Corp"}
 # Bulk prices that are plainly wrong: HLAN closes at about 19,800 in 2022.
 BAD_DATA = {"HLAN"}
+# Typed "Common Stock" by EODHD but not a company's shares (Ian, 2026-11-06:
+# exclude). Checked by hand against every eligible name, 2026-11-06. BDCs,
+# royalty trusts, MLPs and REITs are kept: they're businesses in their own right.
+CLOSED_END_FUNDS = set("""
+    BFK BFZ BGR BIT BLE BLW BME BMEZ BTT BTZ BUI BYM CET CPZ ECC EFR EFT EIC ERC
+    EVF EVN GAM GBAB HQH HQL IIM IQI KTF LEO MAV MCR MMT NBH NXDT NXP OCCI OXLC
+    PMM PMO PPT RA RMT RVT STEW TY TYG VCV VGM VKI VKQ VMO ZF""".split())
+UNITS_NOTES_SPACS = {"GIG-U", "GIX-U", "LHC-UN", "RCF-UN",  # SPAC units
+                     "MOSC",  # SPAC shares
+                     "SCCC",  # Sachem Capital 7.75% notes
+                     "GYC"}  # Cabco trust certificates (floating-rate debt)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                     force=True)
@@ -299,7 +310,12 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
                                 db, params=[screen]).set_index("code")
         dropped = []
         dropped += [(c, "bad_data", None) for c in on_screen.index if c in BAD_DATA]
-        on_screen = on_screen.drop([c for c in on_screen.index if c in BAD_DATA])
+        dropped += [(c, "closed_end_fund", None) for c in on_screen.index
+                    if c in CLOSED_END_FUNDS]
+        dropped += [(c, "unit_note_spac", None) for c in on_screen.index
+                    if c in UNITS_NOTES_SPACS]
+        on_screen = on_screen.drop([c for c in on_screen.index
+                                    if c in BAD_DATA | CLOSED_END_FUNDS | UNITS_NOTES_SPACS])
         info = syms.reindex(on_screen.index)
         unlisted = on_screen.index[info["type"].isna()]
         pref = info["name"].str.contains(r"\bPref", na=False)
@@ -456,8 +472,9 @@ def fetch_drawn_daily(db: sqlite3.Connection, api: "Eodhd") -> None:
             log.info("%d/%d", i, len(todo))
         time.sleep(0.05)
     short = db.execute(
-        "SELECT COUNT(*) FROM fetch_status WHERE period > 0 AND (status = 'error' OR "
-        "last_date < date(to_date, ?))", (f"-{FETCH_MARGIN_DAYS + 7} days",)).fetchone()[0]
+        "SELECT COUNT(*) FROM fetch_status JOIN draw USING (period, code) "
+        "WHERE status = 'error' OR last_date < date(to_date, ?)",
+        (f"-{FETCH_MARGIN_DAYS + 7} days",)).fetchone()[0]
     log.info("daily fetch complete; %d stock-periods stop early or failed (to research)", short)
 
 
