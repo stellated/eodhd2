@@ -10,6 +10,7 @@ from scripts.jml_screen import (
     five_years_before,
     hold_out_pool,
     median_turnover,
+    not_shares_by_code,
     screen_dates,
     stock_period_span,
     venue,
@@ -102,4 +103,11 @@ def test_stock_period_span():
     lo, hi = stock_period_span(date(2019, 11, 1), date(2019, 12, 31))
     assert lo == date(2014, 10, 18)
     assert hi == date(2021, 1, 14)
+
+
+def test_not_shares_by_code():
+    for code in ("GIX-UN", "GIX-U", "LHC-WS", "FITB-P-I", "ISF-CL"):
+        assert not_shares_by_code(code), code
+    for code in ("BF-B", "HEI-A", "MOG-A", "BRK-B", "AAPL", "HTZ-R-W"):
+        assert not not_shares_by_code(code), code
 

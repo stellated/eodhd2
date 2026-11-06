@@ -89,13 +89,19 @@ BAD_DATA = {"HLAN"}
 # exclude). Checked by hand against every eligible name, 2026-11-06. BDCs,
 # royalty trusts, MLPs and REITs are kept: they're businesses in their own right.
 CLOSED_END_FUNDS = set("""
-    BFK BFZ BGR BIT BLE BLW BME BMEZ BTT BTZ BUI BYM CET CPZ ECC EFR EFT EIC ERC
+    ASA BFK BFZ BGR BIT BLE BLW BME BMEZ BTT BTZ BUI BYM CET CPZ ECC EFR EFT EIC ERC
     EVF EVN GAM GBAB HQH HQL IIM IQI KTF LEO MAV MCR MMT NBH NXDT NXP OCCI OXLC
     PMM PMO PPT RA RMT RVT STEW TY TYG VCV VGM VKI VKQ VMO ZF""".split())
 UNITS_NOTES_SPACS = {"GIG-U", "GIX-U", "LHC-UN", "RCF-UN",  # SPAC units
                      "MOSC",  # SPAC shares
                      "SCCC",  # Sachem Capital 7.75% notes
                      "GYC"}  # Cabco trust certificates (floating-rate debt)
+# Units, warrants, rights and preferreds by their code suffix (GIX-UN, LHC-WS,
+# FITB-P-I, ISF-CL); share classes (BF-B, HEI-A) don't match.
+NOT_SHARES_SUFFIX = re.compile(r"-(U|UN|W|WS|WT|RT|P-[A-Z]+|CL)$")
+# Matches the suffix but is the company: EODHD files old Hertz's bars (2015
+# to its 2020 bankruptcy) under HTZ-R-W; HTZ_old and HTZGQ have none.
+SUFFIX_EXCEPTIONS = {"HTZ-R-W"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                     force=True)
@@ -142,6 +148,10 @@ def venue(code, exchange, isin, name) -> str:
     if isinstance(isin, str) and isin.startswith("US") and not adr:
         return "inferred"
     return "foreign_otc"
+
+
+def not_shares_by_code(code: str) -> bool:
+    return code not in SUFFIX_EXCEPTIONS and bool(NOT_SHARES_SUFFIX.search(code))
 
 
 def band(turnover: float):
@@ -313,9 +323,10 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
         dropped += [(c, "closed_end_fund", None) for c in on_screen.index
                     if c in CLOSED_END_FUNDS]
         dropped += [(c, "unit_note_spac", None) for c in on_screen.index
-                    if c in UNITS_NOTES_SPACS]
+                    if c in UNITS_NOTES_SPACS or not_shares_by_code(c)]
         on_screen = on_screen.drop([c for c in on_screen.index
-                                    if c in BAD_DATA | CLOSED_END_FUNDS | UNITS_NOTES_SPACS])
+                                    if c in BAD_DATA | CLOSED_END_FUNDS | UNITS_NOTES_SPACS
+                                    or not_shares_by_code(c)])
         info = syms.reindex(on_screen.index)
         unlisted = on_screen.index[info["type"].isna()]
         pref = info["name"].str.contains(r"\bPref", na=False)
