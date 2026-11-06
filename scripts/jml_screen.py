@@ -5,6 +5,8 @@ turnover, before anything is drawn.
 
   jml_screen.py fetch  --db-path ~/data/jml.db --alphanume-db ~/data/alphanume.db
   jml_screen.py report --db-path ~/data/jml.db --alphanume-db ~/data/alphanume.db
+  jml_screen.py draw   --db-path ~/data/jml.db
+  jml_screen.py daily  --db-path ~/data/jml.db
 
 `fetch` stores, in jml.db (on mars, not sda.db):
 - `sessions`: SPY's trading days, 2014 to 2025 (1 call);
@@ -39,9 +41,10 @@ import re
 import sqlite3
 import sys
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -49,7 +52,7 @@ from dotenv import load_dotenv
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from eodhd_io import EODHD_BASE, _redact_token  # noqa: E402
+from eodhd_io import EODHD_BASE, _redact_token, fetch_daily, pandas2sqlite  # noqa: E402
 
 # (period, first day, last day); Ian, 2026-11-05
 PERIODS = [
@@ -67,6 +70,13 @@ MIN_TURNOVER = 1e6
 BANDS = [("above_50m", 50e6), ("10m_50m", 10e6), ("1m_10m", 1e6)]  # lower bounds
 LISTED = {"NASDAQ", "NYSE", "AMEX", "NYSE MKT", "NYSE ARCA", "BATS"}
 QUOTA_STOP = 85_000
+SEED = 20261105
+# per band: (in-sample, hold-out); Ian, 2026-10-30 and 2026-11-05
+DRAW_SIZES = {"above_50m": (40, 13), "10m_50m": (30, 10), "1m_10m": (30, 10)}
+HOLD_OUT_SHARE = 0.25  # of stocks, not of slots
+FETCH_MARGIN_DAYS = 14  # calendar days either side of a stock-period's span
+DUP_CLOSE_TOL = 0.001
+DUP_MIN_SHARE = 50 / 60  # of the dates
 # Common stocks with bulk bars but in neither symbol list (checked by hand,
 # 2026-11-05: EODHD's search has no US entry for them either). Every other
 # unlisted code passing the screen was foreign OTC, an ETF or a preferred.
@@ -140,13 +150,39 @@ def median_turnover(rows: pd.DataFrame, dates: list[date]) -> pd.Series:
 
 
 def duplicate_groups(rows: pd.DataFrame, dates: list[date]) -> list[list[str]]:
-    """Codes whose closes are identical on every date: one stock listed
-    under two symbols (a rename EODHD serves under both)."""
-    c = rows.pivot_table(index="code", columns="date", values="cl", aggfunc="first")
-    c = c.reindex(columns=[d.isoformat() for d in dates]).round(4)
-    key = c.apply(lambda r: tuple(None if pd.isna(v) else v for v in r), axis=1)
-    groups = key.groupby(key).groups
-    return sorted(sorted(codes) for codes in groups.values() if len(codes) > 1)
+    """One stock under two symbols (a rename EODHD serves under both): closes
+    within DUP_CLOSE_TOL on at least DUP_MIN_SHARE of the dates either traded.
+    Measured 2026-11-05 on period 4: ten rename pairs matched on all 60
+    sessions; share classes at most 25% (GOOG/GOOGL). Volume doesn't
+    separate them: EODHD's two copies of a rename can differ by half.
+    """
+    cols = [d.isoformat() for d in dates]
+    c = rows.pivot_table(index="code", columns="date", values="cl",
+                         aggfunc="first").reindex(columns=cols)
+    parent = {code: code for code in c.index}
+
+    def root(x):
+        while parent[x] != x:
+            x = parent[x]
+        return x
+
+    # candidates share a close (to the cent) on one of the last 5 dates; a
+    # rename matches on nearly every date, so this misses none and is far quicker
+    pairs = set()
+    for col in cols[-5:]:
+        day = c[col].dropna().round(2)
+        for _, codes in day.groupby(day):
+            codes = sorted(codes.index)
+            pairs.update((a, b) for i, a in enumerate(codes) for b in codes[i + 1:])
+    for a, b in sorted(pairs):
+        close_ok = ((c.loc[a] - c.loc[b]).abs() <= DUP_CLOSE_TOL * c.loc[a]).sum()
+        traded = (c.loc[a].notna() | c.loc[b].notna()).sum()  # sessions either one traded
+        if close_ok >= DUP_MIN_SHARE * traded:
+            parent[root(b)] = root(a)
+    groups: dict[str, list[str]] = {}
+    for code in c.index:
+        groups.setdefault(root(code), []).append(code)
+    return sorted(sorted(g) for g in groups.values() if len(g) > 1)
 
 
 class Eodhd:
@@ -266,7 +302,9 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
         on_screen = on_screen.drop([c for c in on_screen.index if c in BAD_DATA])
         info = syms.reindex(on_screen.index)
         unlisted = on_screen.index[info["type"].isna()]
-        common = on_screen.index[(info["type"] == "Common Stock")
+        pref = info["name"].str.contains(r"\bPref", na=False)
+        dropped += [(c, "preferred", info.at[c, "name"]) for c in on_screen.index[pref]]
+        common = on_screen.index[((info["type"] == "Common Stock") & ~pref)
                                  | on_screen.index.isin(list(UNLISTED_COMMON))]
         dropped += [(c, "not_in_symbol_lists", None) for c in unlisted
                     if c not in UNLISTED_COMMON]
@@ -326,19 +364,119 @@ def report(db: sqlite3.Connection, alpha: sqlite3.Connection) -> None:
     print(pd.DataFrame(summary).to_string(index=False))
 
 
+def hold_out_pool(codes: list[str]) -> set[str]:
+    """A seeded HOLD_OUT_SHARE of all eligible stocks, across every period.
+    The hold-out is drawn per stock, not per slot, so no stock is in-sample
+    in one period and hold-out in another (their 5-year windows overlap)."""
+    codes = sorted(set(codes))
+    order = np.random.default_rng([SEED, 0]).permutation(len(codes))
+    return {codes[i] for i in order[:round(HOLD_OUT_SHARE * len(codes))]}
+
+
+def draw_band(codes: list[str], period: int, band_index: int, pool: int, n: int) -> list[str]:
+    """n codes from a seeded shuffle of `codes` (sorted first)."""
+    codes = sorted(codes)
+    rng = np.random.default_rng([SEED, period, band_index, pool])
+    return [codes[i] for i in rng.permutation(len(codes))[:n]]
+
+
+def draw(db: sqlite3.Connection) -> None:
+    if db.execute("SELECT name FROM sqlite_master WHERE name = 'draw'").fetchone():
+        raise SystemExit("draw already exists: the sample is fixed (drop the table by hand "
+                         "only if Ian asks for a new draw, and log it as a new experiment)")
+    db.execute("""CREATE TABLE draw (period INTEGER, code TEXT, band TEXT,
+        sample TEXT CHECK (sample IN ('in_sample', 'hold_out')), draw_rank INTEGER,
+        inclusion_prob REAL, eligible_in_pool INTEGER, seed INTEGER, drawn_at TEXT,
+        PRIMARY KEY (period, code))""")
+    db.execute("DROP TABLE IF EXISTS stock_pool")
+    db.execute("CREATE TABLE stock_pool (code TEXT PRIMARY KEY, sample TEXT NOT NULL)")
+    every = [c for (c,) in db.execute("SELECT DISTINCT code FROM eligible")]
+    hold = hold_out_pool(every)
+    db.executemany("INSERT INTO stock_pool VALUES (?, ?)",
+                   [(c, "hold_out" if c in hold else "in_sample") for c in sorted(set(every))])
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for period, _, _ in PERIODS:
+        for band_index, (name, sizes) in enumerate(DRAW_SIZES.items()):
+            codes = [c for (c,) in db.execute(
+                "SELECT code FROM eligible WHERE period = ? AND band = ?", (period, name))]
+            for pool, (sample, n) in enumerate(zip(("in_sample", "hold_out"), sizes)):
+                pool_codes = [c for c in codes if (c in hold) == (sample == "hold_out")]
+                if len(pool_codes) < n:
+                    raise SystemExit(f"period {period} {name} {sample}: only {len(pool_codes)}")
+                picked = draw_band(pool_codes, period, band_index, pool, n)
+                db.executemany("INSERT INTO draw VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+                    (period, c, name, sample, rank, n / len(pool_codes), len(pool_codes),
+                     SEED, now) for rank, c in enumerate(picked, 1)])
+    db.commit()
+    print(pd.read_sql("SELECT sample, band, COUNT(*) n, ROUND(MIN(inclusion_prob), 4) p_min, "
+                      "ROUND(MAX(inclusion_prob), 4) p_max FROM draw GROUP BY 1, 2", db)
+          .to_string(index=False))
+
+
+def stock_period_span(start: date, end: date) -> tuple[date, date]:
+    """5 years before the period to a year after it, with a margin."""
+    one_after = end.replace(year=end.year + 1)
+    return (five_years_before(start) - timedelta(days=FETCH_MARGIN_DAYS),
+            one_after + timedelta(days=FETCH_MARGIN_DAYS))
+
+
+def fetch_drawn_daily(db: sqlite3.Connection, api: "Eodhd") -> None:
+    """Daily bars for every drawn stock (in-sample and hold-out) over its
+    stock-period span, plus SPY, into `daily`; each result in
+    `fetch_status`. Resumable. One call per stock-period."""
+    db.execute("""CREATE TABLE IF NOT EXISTS fetch_status (period INTEGER, code TEXT,
+        from_date TEXT, to_date TEXT, status TEXT CHECK (status IN ('ok', 'error')),
+        rows INTEGER, first_date TEXT, last_date TEXT, error TEXT, fetched_at TEXT,
+        PRIMARY KEY (period, code))""")
+    spans = {p: stock_period_span(start, end) for p, start, end in PERIODS}
+    todo = [(p, c) for p, c in db.execute("SELECT period, code FROM draw ORDER BY period, code")]
+    todo += [(0, "SPY.US")]  # period 0: the benchmark, over every period's span
+    done = set(db.execute("SELECT period, code FROM fetch_status WHERE status = 'ok'"))
+    todo = [t for t in todo if t not in done]
+    log.info("%d stock-periods to fetch", len(todo))
+    for i, (period, code) in enumerate(todo, 1):
+        lo, hi = spans[period] if period else (min(s[0] for s in spans.values()),
+                                               max(s[1] for s in spans.values()))
+        rows = first = last = error = None
+        try:
+            pdf = fetch_daily(code, api.token, from_date=lo, to_date=hi)
+            pandas2sqlite(pdf, db, "daily")
+            real = pdf[pdf["vo"] > 0]
+            rows, status = len(pdf), "ok"
+            if not real.empty:
+                first, last = str(real["date"].min()), str(real["date"].max())
+        except Exception as e:  # recorded, never dropped: the extract lists it
+            status, error = "error", _redact_token(f"{type(e).__name__}: {e}")[:500]
+            log.warning("%s period %d: %s", code, period, error)
+        db.execute("INSERT OR REPLACE INTO fetch_status VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   (period, code, lo.isoformat(), hi.isoformat(), status, rows, first, last,
+                    error, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        db.commit()
+        if i % 100 == 0:
+            log.info("%d/%d", i, len(todo))
+        time.sleep(0.05)
+    short = db.execute(
+        "SELECT COUNT(*) FROM fetch_status WHERE period > 0 AND (status = 'error' OR "
+        "last_date < date(to_date, ?))", (f"-{FETCH_MARGIN_DAYS + 7} days",)).fetchone()[0]
+    log.info("daily fetch complete; %d stock-periods stop early or failed (to research)", short)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("action", choices=["fetch", "report"])
+    p.add_argument("action", choices=["fetch", "report", "draw", "daily"])
     p.add_argument("--db-path", required=True, type=Path)
     p.add_argument("--alphanume-db", type=Path, default=Path.home() / "data" / "alphanume.db")
     args = p.parse_args()
     db = sqlite3.connect(args.db_path)
     for ddl in _DDL:
         db.execute(ddl)
-    if args.action == "fetch":
+    if args.action in ("fetch", "daily"):
         load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-        fetch(db, Eodhd(os.environ["EODHD_API_TOKEN"]))
+        api = Eodhd(os.environ["EODHD_API_TOKEN"])
+        (fetch if args.action == "fetch" else fetch_drawn_daily)(db, api)
+    elif args.action == "draw":
+        draw(db)
     else:
         alpha = sqlite3.connect(f"file:{args.alphanume_db}?mode=ro", uri=True)
         report(db, alpha)
