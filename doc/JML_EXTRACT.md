@@ -35,6 +35,8 @@ At each period's **screen date** (the last session before it starts), from every
 
 Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's search (LUNA and TBPH among them). They were added by hand. One code's bad prices (HLAN, about $19,800 a share) put it out.
 
+**Validation** (on data from before the period only, so a later collapse can't remove a stock): a drawn stock-period is replaced by the next stock in its band's seeded order if its bars trade on fewer than 90% of SPY's sessions in the 5 years before the period (EODHD blending another company's bars into the code), if it never trades on a 26 December that was a US session (a foreign listing under a US code), or if it's on a short hand-checked list of other bad price series. `draw_rejects` lists the in-sample replacements and why.
+
 **Bands** (by that median turnover) and draw sizes: above $50m (40), $10m-50m (30), $1m-10m (30). Within each band and period, a seeded shuffle of the in-sample pool. **Inclusion probability** is the band's draw size over its in-sample pool size (`draw.inclusion_prob`), so results can be weighted to "the average stock" or "the average dollar".
 
 ## Tables
@@ -42,8 +44,9 @@ Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's 
 | Table | Key | Contents |
 |---|---|---|
 | `periods` | `period` | Start and end, and the span every stock-period in it gets. |
-| `draw` | `period, code` | The 600 in-sample stock-periods: `band`, `draw_rank`, `inclusion_prob`, `eligible_in_pool` (in-sample pool size in the band), `seed`, `drawn_at`. |
-| `daily` | `code, timestamp` | Daily bars for the drawn stocks within their spans, plus SPY over all spans. `op hi lo cl` as traded, `ac` adjusted (as of the fetch, 2026-11-06), `vo`; rows with `vo = 0` are padding (prices carried forward). |
+| `draw` | `period, code` | The 600 in-sample stock-periods: `band`, `draw_rank` (place in the band's seeded order), `inclusion_prob`, `eligible_in_pool` (in-sample pool size in the band), `seed`, `drawn_at`. |
+| `draw_rejects` | `period, code` | In-sample stock-periods replaced by validation: `reason`, `replaced_by`. |
+| `daily` | `code, timestamp` | Daily bars for the drawn stocks within their spans, plus SPY over all spans. `op hi lo cl` as traded, `ac` adjusted (as of the fetch, 2026-11-06 to 08), `vo`; rows with `vo = 0` are padding (prices carried forward). |
 | `fetch_status` | `period, code` | Each fetch: `status` (`ok`/`error`), first and last bar with volume, `error`. SPY is period 0. |
 | `series_gaps` | `period, code` | Stock-periods whose bars stop early or start late, or that EODHD had nothing for (`kind` below). Listed, never dropped. |
 | `eligible` | `period, code` | Every eligible stock outside the hold-out pool, per period: `band`, `median_turnover`, `close`, `ot` (in that month's Alphanume Optionable Tickers snapshot), `venue_inferred`, `exchange` (current or last), `name`, `reused_symbol` (the code is in both symbol lists). |
@@ -74,6 +77,18 @@ A series that stops is usually a takeover, a rename or a bankruptcy. **These hav
   - `HTZ-R-W` holds the old Hertz's bars, through its 2020 bankruptcy; it isn't Hertz's rights.
   - `_old` codes (e.g. `EV_old2`, the old Eaton Vance) are EODHD's names for an earlier company under a reused symbol.
 
-## This build
+## This build: `jml_insample_2026-11-08.db`
 
-(Filled in after the build.)
+**Size and coverage**
+- 108 MB. 600 stock-periods, 528 distinct stocks (some drawn in two or more periods); 873,900 daily rows. EODHD returned data for every one.
+- A median stock-period has 1,571 trading days, the full span.
+- SPY: 2,909 sessions, 2014-10-20 to 2026-05-14.
+
+**The sample**
+- In-sample pools per band and period: 539-799 above $50m, 578-645 at $10m-50m, 613-703 at $1m-10m (`pool_counts`), so inclusion probabilities are 4-7%.
+- 513 of the 600 are in OT (218 of 240, 152 of 180, 143 of 180 by band); 7 are `venue_inferred`.
+- Validation replaced 7 in-sample stock-periods (`draw_rejects`): 2 blended codes (real bars on 28% and 88% of sessions), 2 foreign listings, and 3 bad price series (one code in two periods, and a Russian listing).
+
+**`series_gaps`:** 22, none researched yet.
+- `stops_in_period`: 3 (HBP, PDCE, SWI: all taken over).
+- `stops_in_outcome_year`: 19, mostly takeovers and mergers (e.g. MLNX, LM, HDS, RP, NATI, PXD, EXAS); also CHL (China Mobile, delisted by US sanctions in 2021) and ONDK.
