@@ -17,7 +17,8 @@ Each in-sample stock's bars cover its stock-period span(s): 5 years before
 its period to a year after (jml_screen.stock_period_span). SPY covers every
 span.
 
-Tables written: draw, daily, fetch_status, eligible, pool_counts,
+Tables written: draw, draw_rejects (in-sample stock-periods replaced by
+jml_screen.py validate, and why), daily, fetch_status, eligible, pool_counts,
 screen_dropped, series_gaps, periods, extract_info. The checks run at the
 end; a failure raises before the file is marked read-only.
 
@@ -76,6 +77,8 @@ def build(src_path: Path, out_path: Path) -> None:
 
     out.execute("CREATE TABLE draw AS SELECT period, code, band, draw_rank, inclusion_prob, "
                 "eligible_in_pool, seed, drawn_at FROM j.draw WHERE sample = 'in_sample'")
+    out.execute("CREATE TABLE draw_rejects AS SELECT period, code, band, draw_rank, reason, "
+                "replaced_by FROM j.draw_rejects WHERE sample = 'in_sample'")
     out.execute("CREATE TABLE fetch_status AS SELECT f.* FROM j.fetch_status f "
                 "JOIN draw USING (period, code)")
     out.execute("INSERT INTO fetch_status SELECT * FROM j.fetch_status "
@@ -138,7 +141,8 @@ def build(src_path: Path, out_path: Path) -> None:
 
 def check(out: sqlite3.Connection) -> None:
     """Hard checks; any failure stops the build."""
-    for table, col in [("draw", "code"), ("daily", "code"), ("fetch_status", "code"),
+    for table, col in [("draw", "code"), ("draw_rejects", "code"),
+                       ("draw_rejects", "replaced_by"), ("daily", "code"), ("fetch_status", "code"),
                        ("eligible", "code"), ("screen_dropped", "code"),
                        ("series_gaps", "code")]:
         n = out.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IN "

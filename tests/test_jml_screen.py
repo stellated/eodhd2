@@ -11,6 +11,7 @@ from scripts.jml_screen import (
     hold_out_pool,
     median_turnover,
     not_shares_by_code,
+    pre_period_problem,
     screen_dates,
     stock_period_span,
     venue,
@@ -110,4 +111,22 @@ def test_not_shares_by_code():
         assert not_shares_by_code(code), code
     for code in ("BF-B", "HEI-A", "MOG-A", "BRK-B", "AAPL", "HTZ-R-W"):
         assert not not_shares_by_code(code), code
+
+
+def test_pre_period_problem(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "j.db")
+    db.execute("CREATE TABLE daily (code TEXT, date TEXT, vo INTEGER)")
+    days = [(date(2014, 11, 3) + timedelta(days=i)).isoformat() for i in range(0, 1830)]
+    db.executemany("INSERT INTO daily VALUES ('SPY.US', ?, 1)", [(d,) for d in days])
+    db.executemany("INSERT INTO daily VALUES ('OK.US', ?, 1)", [(d,) for d in days])
+    db.executemany("INSERT INTO daily VALUES ('THIN.US', ?, ?)",
+                   [(d, int(i % 5 != 0)) for i, d in enumerate(days)])  # 80% real
+    db.executemany("INSERT INTO daily VALUES ('VIENNA.US', ?, ?)",
+                   [(d, int(d[5:] != "12-26")) for d in days])
+    start = date(2019, 11, 1)
+    assert pre_period_problem(db, "OK.US", start) is None
+    assert "80%" in pre_period_problem(db, "THIN.US", start)
+    assert "26 December" in pre_period_problem(db, "VIENNA.US", start)
+    assert "Russian" in pre_period_problem(db, "NLMK.US", start)
 

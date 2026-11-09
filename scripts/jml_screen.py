@@ -7,6 +7,7 @@ turnover, before anything is drawn.
   jml_screen.py report --db-path ~/data/jml.db --alphanume-db ~/data/alphanume.db
   jml_screen.py draw   --db-path ~/data/jml.db
   jml_screen.py daily  --db-path ~/data/jml.db
+  jml_screen.py validate --db-path ~/data/jml.db
 
 `fetch` stores, in jml.db (on mars, not sda.db):
 - `sessions`: SPY's trading days, 2014 to 2025 (1 call);
@@ -70,6 +71,18 @@ MIN_TURNOVER = 1e6
 BANDS = [("above_50m", 50e6), ("10m_50m", 10e6), ("1m_10m", 1e6)]  # lower bounds
 LISTED = {"NASDAQ", "NYSE", "AMEX", "NYSE MKT", "NYSE ARCA", "BATS"}
 QUOTA_STOP = 85_000
+# validate(): a drawn stock must have real bars (vo > 0) on at least this share
+# of SPY's sessions in the 5 years before its period (Ian, 2026-11-08). LK
+# (28%), TFII and TRA failed: EODHD blends another company's bars into the code.
+MIN_REAL_SHARE = 0.90
+# ...and trade on at least one 26 December in those years when it was a US
+# session: a foreign listing filed under a US code doesn't (RBI, FTAL).
+# Rejected by hand (each checked 2026-11-08); only pre-period data was looked at.
+REJECT_BY_HAND = {
+    "TRA": "closes of 43,000 to 137,000: another market's prices under a dead US code",
+    "TNT": "closes of 1,310 to 31,500: not a US price series",
+    "NLMK": "NLMK, the Russian steelmaker (Moscow, and London until 2022), under a US code",
+}
 SEED = 20261105
 # per band: (in-sample, hold-out); Ian, 2026-10-30 and 2026-11-05
 DRAW_SIZES = {"above_50m": (40, 13), "10m_50m": (30, 10), "1m_10m": (30, 10)}
@@ -400,11 +413,17 @@ def hold_out_pool(codes: list[str]) -> set[str]:
     return {codes[i] for i in order[:round(HOLD_OUT_SHARE * len(codes))]}
 
 
-def draw_band(codes: list[str], period: int, band_index: int, pool: int, n: int) -> list[str]:
-    """n codes from a seeded shuffle of `codes` (sorted first)."""
+def band_order(codes: list[str], period: int, band_index: int, pool: int) -> list[str]:
+    """A seeded shuffle of `codes` (sorted first): the draw takes them in
+    this order, and a stock failing validate() is replaced by the next."""
     codes = sorted(codes)
     rng = np.random.default_rng([SEED, period, band_index, pool])
-    return [codes[i] for i in rng.permutation(len(codes))[:n]]
+    return [codes[i] for i in rng.permutation(len(codes))]
+
+
+def draw_band(codes: list[str], period: int, band_index: int, pool: int, n: int) -> list[str]:
+    """The first n codes of band_order()."""
+    return band_order(codes, period, band_index, pool)[:n]
 
 
 def draw(db: sqlite3.Connection) -> None:
@@ -447,6 +466,120 @@ def stock_period_span(start: date, end: date) -> tuple[date, date]:
             one_after + timedelta(days=FETCH_MARGIN_DAYS))
 
 
+def pre_period_problem(db: sqlite3.Connection, code: str, start: date):
+    """Why a stock-period fails validation, or None. Only data before the
+    period start is used, so a later collapse can't remove a stock."""
+    if code[:-3] in REJECT_BY_HAND:
+        return REJECT_BY_HAND[code[:-3]]
+    lo, hi = five_years_before(start).isoformat(), start.isoformat()
+    sessions = [d for (d,) in db.execute(
+        "SELECT date FROM daily WHERE code = 'SPY.US' AND vo > 0 AND date >= ? AND date < ?",
+        (lo, hi))]
+    real = {d for (d,) in db.execute(
+        "SELECT date FROM daily WHERE code = ? AND vo > 0 AND date >= ? AND date < ?",
+        (code, lo, hi))}
+    share = len(real & set(sessions)) / len(sessions)
+    if share < MIN_REAL_SHARE:
+        return f"real bars on {share:.0%} of the 5 years' sessions"
+    dec26 = [d for d in sessions if d[5:] == "12-26"]
+    if dec26 and not real & set(dec26):
+        return f"no trade on 26 December in {len(dec26)} years (a foreign calendar)"
+    return None
+
+
+def store_draw_order(db: sqlite3.Connection) -> None:
+    """Each band's full seeded order, per pool (draw() took the first n)."""
+    db.execute("DROP TABLE IF EXISTS draw_order")
+    db.execute("""CREATE TABLE draw_order (period INTEGER, band TEXT, sample TEXT,
+        rank INTEGER, code TEXT, PRIMARY KEY (period, band, sample, rank))""")
+    hold = {c for (c,) in db.execute("SELECT code FROM stock_pool WHERE sample = 'hold_out'")}
+    for period, _, _ in PERIODS:
+        for band_index, name in enumerate(DRAW_SIZES):
+            codes = [c for (c,) in db.execute(
+                "SELECT code FROM eligible WHERE period = ? AND band = ?", (period, name))]
+            for pool, sample in enumerate(("in_sample", "hold_out")):
+                order = band_order([c for c in codes if (c in hold) == (sample == "hold_out")],
+                                   period, band_index, pool)
+                db.executemany("INSERT INTO draw_order VALUES (?, ?, ?, ?, ?)",
+                               [(period, name, sample, r, c) for r, c in enumerate(order, 1)])
+    # the stored draw must be exactly the first n of each order
+    bad = db.execute("""SELECT COUNT(*) FROM draw d LEFT JOIN draw_order o
+        ON o.period = d.period AND o.code = d.code AND o.sample = d.sample
+        WHERE o.rank IS NULL OR o.rank != d.draw_rank""").fetchone()[0]
+    if bad:
+        raise SystemExit(f"draw_order doesn't reproduce the draw ({bad} rows)")
+    db.commit()
+
+
+def validate(db: sqlite3.Connection, api: "Eodhd") -> None:
+    """Replace drawn stock-periods failing pre_period_problem() with the
+    next stock in their band's order (fetched and checked in turn).
+    Rejections go in `draw_rejects`; the draw keeps everyone else."""
+    store_draw_order(db)
+    db.execute("""CREATE TABLE IF NOT EXISTS draw_rejects (period INTEGER, code TEXT,
+        band TEXT, sample TEXT, draw_rank INTEGER, reason TEXT, replaced_by TEXT,
+        PRIMARY KEY (period, code))""")
+    starts = {p: s for p, s, _ in PERIODS}
+    spans = {p: stock_period_span(s, e) for p, s, e in PERIODS}
+    for period, code, band, sample, rank in db.execute(
+            "SELECT period, code, band, sample, draw_rank FROM draw ORDER BY 1, 2").fetchall():
+        reason = pre_period_problem(db, code, starts[period])
+        if reason is None:
+            continue
+        used = {c for (c,) in db.execute(
+            "SELECT code FROM draw WHERE period = ? UNION SELECT code FROM draw_rejects "
+            "WHERE period = ?", (period, period))}
+        for next_rank, cand in db.execute(
+                "SELECT rank, code FROM draw_order WHERE period = ? AND band = ? AND sample = ? "
+                "AND rank > ? ORDER BY rank", (period, band, sample, rank)).fetchall():
+            if cand in used:
+                continue
+            if not db.execute("SELECT 1 FROM fetch_status WHERE period = ? AND code = ? "
+                              "AND status = 'ok'", (period, cand)).fetchone():
+                fetch_one(db, api, period, cand, *spans[period])
+            cand_reason = pre_period_problem(db, cand, starts[period])
+            if cand_reason is None:
+                break
+            db.execute("INSERT OR REPLACE INTO draw_rejects VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                       (period, cand, band, sample, next_rank, cand_reason))
+            used.add(cand)
+        else:
+            raise SystemExit(f"period {period} {band} {sample}: no replacement for {code}")
+        prob, n_pool = db.execute("SELECT inclusion_prob, eligible_in_pool FROM draw "
+                                  "WHERE period = ? AND code = ?", (period, code)).fetchone()
+        db.execute("DELETE FROM draw WHERE period = ? AND code = ?", (period, code))
+        db.execute("INSERT INTO draw VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   (period, cand, band, sample, next_rank, prob, n_pool, SEED,
+                    datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        db.execute("INSERT OR REPLACE INTO draw_rejects VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   (period, code, band, sample, rank, reason, cand))
+        db.commit()
+        log.info("period %d %s %s: %s replaced by %s (%s)", period, band, sample, code, cand,
+                 reason)
+    print(pd.read_sql("SELECT * FROM draw_rejects ORDER BY period, band", db)
+          .to_string(index=False))
+
+
+def fetch_one(db: sqlite3.Connection, api: "Eodhd", period: int, code: str, lo: date,
+              hi: date) -> None:
+    """One stock-period's daily bars into `daily`, and the result in `fetch_status`."""
+    rows = first = last = error = None
+    try:
+        pdf = fetch_daily(code, api.token, from_date=lo, to_date=hi)
+        pandas2sqlite(pdf, db, "daily")
+        real = pdf[pdf["vo"] > 0]
+        rows, status = len(pdf), "ok"
+        if not real.empty:
+            first, last = str(real["date"].min()), str(real["date"].max())
+    except Exception as e:  # recorded, never dropped: the extract lists it
+        status, error = "error", _redact_token(f"{type(e).__name__}: {e}")[:500]
+        log.warning("%s period %d: %s", code, period, error)
+    db.execute("INSERT OR REPLACE INTO fetch_status VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               (period, code, lo.isoformat(), hi.isoformat(), status, rows, first, last,
+                error, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+    db.commit()
+
+
 def fetch_drawn_daily(db: sqlite3.Connection, api: "Eodhd") -> None:
     """Daily bars for every drawn stock (in-sample and hold-out) over its
     stock-period span, plus SPY, into `daily`; each result in
@@ -464,21 +597,7 @@ def fetch_drawn_daily(db: sqlite3.Connection, api: "Eodhd") -> None:
     for i, (period, code) in enumerate(todo, 1):
         lo, hi = spans[period] if period else (min(s[0] for s in spans.values()),
                                                max(s[1] for s in spans.values()))
-        rows = first = last = error = None
-        try:
-            pdf = fetch_daily(code, api.token, from_date=lo, to_date=hi)
-            pandas2sqlite(pdf, db, "daily")
-            real = pdf[pdf["vo"] > 0]
-            rows, status = len(pdf), "ok"
-            if not real.empty:
-                first, last = str(real["date"].min()), str(real["date"].max())
-        except Exception as e:  # recorded, never dropped: the extract lists it
-            status, error = "error", _redact_token(f"{type(e).__name__}: {e}")[:500]
-            log.warning("%s period %d: %s", code, period, error)
-        db.execute("INSERT OR REPLACE INTO fetch_status VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   (period, code, lo.isoformat(), hi.isoformat(), status, rows, first, last,
-                    error, datetime.now(timezone.utc).isoformat(timespec="seconds")))
-        db.commit()
+        fetch_one(db, api, period, code, lo, hi)
         if i % 100 == 0:
             log.info("%d/%d", i, len(todo))
         time.sleep(0.05)
@@ -492,17 +611,17 @@ def fetch_drawn_daily(db: sqlite3.Connection, api: "Eodhd") -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("action", choices=["fetch", "report", "draw", "daily"])
+    p.add_argument("action", choices=["fetch", "report", "draw", "daily", "validate"])
     p.add_argument("--db-path", required=True, type=Path)
     p.add_argument("--alphanume-db", type=Path, default=Path.home() / "data" / "alphanume.db")
     args = p.parse_args()
     db = sqlite3.connect(args.db_path)
     for ddl in _DDL:
         db.execute(ddl)
-    if args.action in ("fetch", "daily"):
+    if args.action in ("fetch", "daily", "validate"):
         load_dotenv(Path(__file__).resolve().parent.parent / ".env")
         api = Eodhd(os.environ["EODHD_API_TOKEN"])
-        (fetch if args.action == "fetch" else fetch_drawn_daily)(db, api)
+        {"fetch": fetch, "daily": fetch_drawn_daily, "validate": validate}[args.action](db, api)
     elif args.action == "draw":
         draw(db)
     else:

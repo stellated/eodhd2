@@ -20,6 +20,10 @@ def jml_db(tmp_path, monkeypatch):
             inclusion_prob REAL, eligible_in_pool INTEGER, seed INTEGER, drawn_at TEXT);
         INSERT INTO draw VALUES (1, 'IN.US', 'above_50m', 'in_sample', 1, 1.0, 1, 1, 'x'),
             (1, 'HOLD.US', 'above_50m', 'hold_out', 1, 0.5, 2, 1, 'x');
+        CREATE TABLE draw_rejects (period INTEGER, code TEXT, band TEXT, sample TEXT,
+            draw_rank INTEGER, reason TEXT, replaced_by TEXT);
+        INSERT INTO draw_rejects VALUES (1, 'BADIN.US', 'above_50m', 'in_sample', 1, 'x', 'IN.US'),
+            (1, 'BADHOLD.US', 'above_50m', 'hold_out', 1, 'x', 'HOLD.US');
         CREATE TABLE eligible (period INTEGER, code TEXT, band TEXT);
         INSERT INTO eligible VALUES (1, 'IN.US', 'above_50m'), (1, 'HOLD.US', 'above_50m'),
             (1, 'POOL.US', 'above_50m');
@@ -55,6 +59,7 @@ def test_extract_holds_nothing_on_hold_out_stocks(jml_db, tmp_path):
         codes = {c for (c,) in db.execute(f"SELECT code FROM {table}")}
         assert not codes & {"HOLD.US", "POOL.US", "OLDPOOL.US"}, table
     assert db.execute("SELECT COUNT(*) FROM screen_dropped").fetchone()[0] == 1  # JUNK only
+    assert db.execute("SELECT code FROM draw_rejects").fetchall() == [("BADIN.US",)]
     assert db.execute("SELECT hold_out_pool FROM pool_counts").fetchone()[0] == 2
 
 
