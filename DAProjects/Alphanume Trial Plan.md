@@ -322,7 +322,7 @@ Reverse Splits and Dilutive S-1. Each gets:
   one at a time, checked, uploaded to
   `onedrive:Data/StockDataAnalytics/extracts/<repo>/`, and the local copy
   deleted; the analysis repos run on the Mac and copy it from there
-  (`~/analysis/analysis-common/project/move-to-mac.md`).
+  (`~/repos/analysis/analysis-common/project/move-to-mac.md`).
 - **A schema doc** like `doc/OUTCOMES_SCHEMA.md`: column meanings, how
   rows were produced, known caveats.
 - **Data caveats:** the relevant parts of `doc/LIMITATIONS.md` (5m

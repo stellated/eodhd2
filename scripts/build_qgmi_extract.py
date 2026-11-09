@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build qgmi's in-sample extract (its data request,
-~/analysis/qgmi/proposals/eodhd2-qgmi.md) as one read-only SQLite file.
+~/repos/analysis/qgmi/proposals/eodhd2-qgmi.md) as one read-only SQLite file.
 
 Sources, all opened read-only:
 - alphanume.db: QGMI picks, Optionable Tickers snapshots, Historical

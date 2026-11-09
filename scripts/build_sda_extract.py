@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build sda's in-sample extract (its data request,
-~/analysis/sda/proposals/eodhd2-sda.md) as one read-only SQLite file.
+~/repos/analysis/sda/proposals/eodhd2-sda.md) as one read-only SQLite file.
 
 Sources, all opened read-only:
 - sda.db (a pulled copy, never the one a run is writing): the tips,

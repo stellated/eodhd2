@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build jml's in-sample extract (its data request,
-~/analysis/jml/proposals/eodhd2-jml.md) as one read-only SQLite file.
+~/repos/analysis/jml/proposals/eodhd2-jml.md) as one read-only SQLite file.
 
 Source: jml.db (scripts/jml_screen.py: the screen, the draw and the drawn
 stocks' daily bars), opened read-only. No API calls.

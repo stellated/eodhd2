@@ -2075,7 +2075,7 @@ time, checked, uploaded to `onedrive:Data/StockDataAnalytics/extracts/<repo>/`
 and deleted locally; the Mac copies it out of its OneDrive folder into the
 repo's `data/` before opening it. Proposals still arrive by git: pull the
 analysis repo on mars and read it. The plan and steps are in
-`~/analysis/analysis-common/project/move-to-mac.md`.
+`~/repos/analysis/analysis-common/project/move-to-mac.md`.
 
 ### Alphanume trial capture: raw responses first, parse later (2026-10-23)
 **Context:** alphanume now offers a 3-day free trial with full Pro access
