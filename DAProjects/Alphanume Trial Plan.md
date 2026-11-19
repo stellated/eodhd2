@@ -5,6 +5,8 @@ Drafted 2026-10-23 (Melbourne). Covers what to do before and during the
 to subscribe. Times are Melbourne (AEDT, UTC+11) unless marked ET (New
 York; EDT, UTC-4, until US clocks change on 1 November).
 
+The findings on each dataset are collected in `doc/ALPHANUME_DATA.md`.
+
 ## Facts this plan rests on (checked 2026-10-23)
 
 - **Trial:** <https://www.alphanume.com/signup?plan=pro&billing=monthly>.
