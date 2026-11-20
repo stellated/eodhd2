@@ -2156,6 +2156,39 @@ repo's `data/` before opening it. Proposals still arrive by git: pull the
 analysis repo on mars and read it. The plan and steps are in
 `~/repos/analysis/analysis-common/project/move-to-mac.md`.
 
+### Extracts are built from a named, kept snapshot (2026-11-19)
+**Problem:** the sda project asked which copy of `sda.db` its 2026-10-30
+extract came from. `extract_info` didn't say. The answer, from this
+session's log: a scratch pull of the live db at 2026-10-30 20:23 UTC,
+deleted after the build. That copy was the state pushed by that morning's
+weekday run (05:09 EDT). No copy of that exact file exists now; the
+nearest is the Saturday snapshot `sda.2026-10-31.db`, taken one run later.
+
+**Decisions (Ian and sda):**
+- **Every builder records its sources** (`scripts/extract_source.py`,
+  used by `build_sda_extract.py`, `build_jml_extract.py` and
+  `build_qgmi_extract.py`). For each input db, `extract_info` gets
+  `<key>_path`, `_bytes`, `_mtime`, `_sha1` (hashed before the build
+  reads it), `_wal_bytes` if a WAL file holds data, and `_origin` from
+  `--<db>-origin`.
+- **Future extracts are built from a dated snapshot, not the live db.**
+  This matters most for sda's hold-out extract. Steps:
+  1. Take a server-side copy on the remote under a name the 28-day prune
+     never matches, e.g.
+     `rclone copyto onedrive:Data/StockDataAnalytics/mars/sda.db
+     onedrive:Data/StockDataAnalytics/mars/sda.<date>.extract-<repo>.db`.
+  2. Pull that copy, and build with `--sda-db-origin` naming it.
+  3. The same goes for any local input that's still being written
+     (`alphanume.db`, `jml.db`, `universe.db`): build from a dated copy
+     uploaded beside it, not the file in use.
+
+  The recorded sha1 then matches a file anyone can fetch again.
+- **`sda.2026-10-31.db` is kept**, as the nearest named source of the
+  delivered extract. It's copied to `sda.2026-10-31.keep.db`, which the
+  prune doesn't match; the original rotates out as usual.
+- **The delivered extract isn't rebuilt.** sda keeps it read-only with
+  its checksum, so its results can be rerun from that file.
+
 ### Alphanume trial capture: raw responses first, parse later (2026-10-23)
 **Context:** alphanume now offers a 3-day free trial with full Pro access
 (see `DAProjects/Alphanume Trial Plan.md`). Nothing is reachable without a

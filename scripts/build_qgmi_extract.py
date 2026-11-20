@@ -38,6 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from get_ig_margins import OUTPUT_COLUMNS as IG_COLUMNS  # noqa: E402
 from get_ig_margins import create_resolved_view  # noqa: E402
+from extract_source import add_origin_arg, source_info  # noqa: E402
 from get_universe_daily import BENCHMARKS, eodhd_code  # noqa: E402
 
 from eodhd_io import _redact_token  # noqa: E402
@@ -122,7 +123,13 @@ def main() -> None:
     parser.add_argument("--first-rebalance", type=date.fromisoformat, default=FIRST_REBALANCE)
     parser.add_argument("--last-rebalance", type=date.fromisoformat, default=LAST_REBALANCE)
     parser.add_argument("--bars-through", type=date.fromisoformat, default=BARS_THROUGH)
+    for name in ("alphanume-db", "universe-db", "sda-db"):
+        add_origin_arg(parser, name)
     args = parser.parse_args()
+    # which files this was built from, hashed before anything reads them
+    sources = {**source_info("alphanume_db", args.alphanume_db, args.alphanume_db_origin),
+               **source_info("universe_db", args.universe_db, args.universe_db_origin),
+               **source_info("sda_db", args.sda_db, args.sda_db_origin)}
     first, last, through = (args.first_rebalance.isoformat(), args.last_rebalance.isoformat(),
                             args.bars_through.isoformat())
 
@@ -333,6 +340,7 @@ def main() -> None:
     info = {
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "eodhd2_commit": git_commit(),
+        **sources,
         "rebalances": f"{first}..{last} ({len(rebalances)})",
         "bars_through": through,
         "alphanume_rows_through": last,

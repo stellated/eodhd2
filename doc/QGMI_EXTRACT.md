@@ -40,7 +40,7 @@ All `code`s are EODHD's: Alphanume's ticker with `.` replaced by `-`, plus
 | `ig_margins` | `rebalance_date, code` | IG's row for each universe ticker or pick, from the latest IG file generated on or before the rebalance date. `age_days` = rebalance date minus the file's `source_modified`. `ig_code`/`renamed_on` as in `ig_margins_resolved`. |
 | `bar_gaps` | `rebalance_date, code` | Universe tickers and picks with no usable bar on a rebalance date, and why (below). |
 | `universe_counts` | `date` | Per snapshot: tickers, `has_weeklies`, those with a bar, those with $50m notional (both the weekly-options subset and the whole snapshot). |
-| `extract_info` | `key` | Build time, eodhd2 commit, cut-offs, IG snapshots used. |
+| `extract_info` | `key` | Build time, eodhd2 commit, cut-offs, IG snapshots used; from builds after 2026-11-19, each source db's path, size, mtime, sha1 and origin (`alphanume_db_*`, `universe_db_*`, `sda_db_*`). |
 
 ### `bar_gaps.reason`
 

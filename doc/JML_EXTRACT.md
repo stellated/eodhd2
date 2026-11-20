@@ -52,7 +52,7 @@ Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's 
 | `eligible` | `period, code` | Every eligible stock outside the hold-out pool, per period: `band`, `median_turnover`, `close`, `ot` (in that month's Alphanume Optionable Tickers snapshot), `venue_inferred`, `exchange` (current or last), `name`, `reused_symbol` (the code is in both symbol lists). |
 | `pool_counts` | `period, band` | Eligible stocks per band, in each pool (the hold-out pool as a count only). |
 | `screen_dropped` | `period, code` | Why other tickers trading on the screen date were left out (`reason`, `detail`); rows naming a hold-out stock are removed. |
-| `extract_info` | `key` | Build time, eodhd2 commit, seed, rules. |
+| `extract_info` | `key` | Build time, eodhd2 commit, seed, rules; from builds after 2026-11-19, the source db's path, size, mtime, sha1 and origin (`jml_db_*`). |
 
 ### `series_gaps.kind`
 

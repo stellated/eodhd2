@@ -38,7 +38,8 @@ The request's checks run at the end; a failed hard check raises before
 the file is marked read-only.
 
   build_sda_extract.py --sda-db sda.db --alphanume-db ~/data/alphanume.db \\
-      --out sda_insample.db --docs-out docs/
+      --out sda_insample.db --docs-out docs/ \\
+      --sda-db-origin "onedrive:Data/StockDataAnalytics/mars/sda.db ModTime <at pull>"
 """
 import argparse
 import logging
@@ -58,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_qgmi_extract import history_rows  # noqa: E402
 from get_ig_margins import OUTPUT_COLUMNS as IG_COLUMNS  # noqa: E402
 from get_ig_margins import create_resolved_view  # noqa: E402
+from extract_source import add_origin_arg, source_info  # noqa: E402
 
 from eodhd_io import (  # noqa: E402
     DEFAULT_N1,
@@ -166,7 +168,12 @@ def main() -> None:
     parser.add_argument("--docs-out", required=True, type=Path,
                         help="directory for the doc copies delivered with the extract")
     parser.add_argument("--last-tip-date", type=date.fromisoformat, default=LAST_TIP_DATE)
+    add_origin_arg(parser, "sda-db")
+    add_origin_arg(parser, "alphanume-db")
     args = parser.parse_args()
+    # which files this was built from, hashed before anything reads them
+    sources = {**source_info("sda_db", args.sda_db, args.sda_db_origin),
+               **source_info("alphanume_db", args.alphanume_db, args.alphanume_db_origin)}
     cut = args.last_tip_date.isoformat()
 
     if args.out.exists():
@@ -364,6 +371,7 @@ def main() -> None:
     info = {
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "eodhd2_commit": git_commit(),
+        **sources,
         "tips": f"{tips[0][1]}..{cut} ({len(tips)} code/date)",
         "window": f"{DEFAULT_N1} sessions before to {DEFAULT_N2} after each tip",
         "bars": f"{lo}..{hi}",

@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from extract_source import add_origin_arg, source_info  # noqa: E402
 from jml_screen import (  # noqa: E402
     DRAW_SIZES,
     FETCH_MARGIN_DAYS,
@@ -60,7 +61,9 @@ def git_commit() -> str:
                           text=True, cwd=Path(__file__).resolve().parent).stdout.strip()
 
 
-def build(src_path: Path, out_path: Path) -> None:
+def build(src_path: Path, out_path: Path, origin: str | None = None) -> None:
+    # which file this was built from, hashed before anything reads it
+    sources = source_info("jml_db", src_path, origin)
     if out_path.exists():
         raise SystemExit(f"{out_path} exists")
     out = sqlite3.connect(out_path)
@@ -120,7 +123,7 @@ def build(src_path: Path, out_path: Path) -> None:
 
     info = {
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "eodhd2_commit": git_commit(), "source": str(src_path),
+        "eodhd2_commit": git_commit(), "source": str(src_path), **sources,
         "seed": str(SEED), "hold_out_share_of_stocks": str(HOLD_OUT_SHARE),
         "draw_sizes_in_sample": ", ".join(f"{b} {n}" for b, (n, _) in DRAW_SIZES.items()),
         "screen": f"{SCREEN_SESSIONS}-session median close x volume >= {MIN_TURNOVER:,.0f}; "
@@ -176,8 +179,9 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--jml-db", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path)
+    add_origin_arg(p, "jml-db")
     args = p.parse_args()
-    build(args.jml_db, args.out)
+    build(args.jml_db, args.out, args.jml_db_origin)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,20 @@ records the build. Delivered with it: `OUTCOMES_SCHEMA.md` (the rules of
 the baseline trade, every `outcomes` column) and `TICKER_ALIASES.md`
 (renames, mergers and cash-outs, cut to the in-sample tips).
 
+**Source of the 2026-10-30 extract** (`sda_insample_2026-10-30.db`):
+- **`sda.db`:** a scratch pull of the live db at 2026-10-30 20:23 UTC,
+  i.e. the state pushed by that morning's weekday run (05:09 EDT). It
+  was deleted after the build, and `extract_info` doesn't name it.
+- **Nearest kept copy:** `mars/sda.2026-10-31.keep.db`, the snapshot
+  taken one run later.
+- **`alphanume.db`:** read in place from `~/data/alphanume.db`; its last
+  fetch was 2026-10-29 03:43 UTC, so it's unchanged since
+  (sha1 `13ae3b62d23c3c40dbf280f5a44f83bc42ceced7`).
+
+Later builds name and checksum their source snapshot in `extract_info`
+(see eodhd2 `doc/DESIGN_DECISIONS.md`, "Extracts are built from a named,
+kept snapshot").
+
 ## In-sample
 
 - **Tips dated 2026-04-08 to 2026-09-01:** 103 email dates, 4,059 tips,
@@ -43,7 +57,7 @@ symbol the newsletter tipped (see `ticker_aliases`).
 | `ig_margins` | `download_date, code` | IG's offering for tipped codes: `new_positions`, `shortable`, borrow rate, tier-1 limit and rate. `ig_code`/`renamed_on` as in eodhd2's `ig_margins_resolved`. `source_modified` is when IG generated the file. |
 | `window_gaps` | `tablename, code, tip_date` | Tips with fewer than 20 sessions of `daily` or `intraday_5m` after the tip date. |
 | `outcome_gaps` | `code, tip_date` | Tips without a finished outcome (none in this build). |
-| `extract_info` | `key` | Build time, eodhd2 commit, cut-offs, the assumptions below. |
+| `extract_info` | `key` | Build time, eodhd2 commit, cut-offs, the assumptions below; from builds after 2026-11-19, each source db's path, size, mtime, sha1 and origin (`sda_db_*`, `alphanume_db_*`). |
 
 ## When data became known
 
