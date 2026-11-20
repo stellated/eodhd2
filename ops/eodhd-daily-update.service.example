@@ -8,6 +8,7 @@
 Description=EODHD weekday tip email capture and price fetch
 Wants=network-online.target
 After=network-online.target
+OnFailure=eodhd-failure-alert@%n.service
 
 [Service]
 Type=oneshot

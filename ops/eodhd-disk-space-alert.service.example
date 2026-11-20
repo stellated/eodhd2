@@ -8,6 +8,7 @@
 Description=Alert if spare disk space on this VM drops below threshold
 Wants=network-online.target
 After=network-online.target
+OnFailure=eodhd-failure-alert@%n.service
 
 [Service]
 Type=oneshot

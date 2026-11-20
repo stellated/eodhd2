@@ -1152,6 +1152,85 @@ went from 1.44 GB to 1.89 GB. All 358 were loaded through the same
   nothing (it deletes the download in that case), so an unchanged day
   doesn't re-upload the db.
 
+### sda.db replaced by an error page; pull/push validation and a failure alert (2026-11-19)
+**What happened:**
+- **2026-11-12 21:04 EST:** the IG run's pull of `sda.db` failed. All
+  three rclone attempts got a 585-byte body ("multipart copy: wrote 585
+  bytes but expected to write 514654208").
+- **The remote copy was broken too.** At the second of the last attempt,
+  the remote copy's ModTime changed, and it was now the same 585 bytes of
+  OneDrive error HTML. How OneDrive came to replace it is unknown.
+- **The junk copy kept being pushed.** `set -e` stopped the run, but left
+  the partial download at `DB_PATH`. `recover_leftover_if_any()` treats
+  that file as a run's unpushed work. Each later IG run found the remote
+  "unchanged since pull", pushed the junk back over the junk, pulled it
+  again, and crashed with `sqlite3.DatabaseError: file is not a database`.
+- **The daily runs got nothing done.** 11-13's pull failed; 11-14 to
+  11-19 refused at leftover recovery, because the remote had changed
+  since their own pull.
+- **Nothing alerted.** It was found a week later, on 2026-11-19, when Ian
+  asked how recent runs had gone.
+
+The ModTime check did what it was built for: it stopped one run
+overwriting another's work. But it says nothing about content. A broken
+file that nobody else touches passes it every time.
+
+**Recovery (2026-11-19):**
+- **Restore:** Ian restored the 2026-11-12 05:20 EST version (the last
+  good daily push) from OneDrive's version history on the Mac, and copied
+  it into the synced folder.
+  - Until the Mac client finished the upload, the remote showed a 0-byte
+    placeholder; the web page kept showing 585 bytes.
+- **Checks on the restored file:** downloaded to mars and checked:
+  - SQLite header and `PRAGMA quick_check`;
+  - `tip_details`/`outcomes` up to 2026-11-12;
+  - `daily`/`intraday_5m` up to 2026-11-11;
+  - `ig_margins` up to download date 2026-11-11.
+- **Junk work dirs** moved to `/var/tmp/eodhd-incident-2026-11-12/`.
+- **IG file for 11-18:** found in the IG work dir and loaded (8,178
+  rows, download date 2026-11-18, generated 11-19 UTC). Also archived to
+  `tiered/`.
+  - This push hit a 503 mid-upload that rclone retried through; a byte
+    comparison of the remote against the local copy confirmed it.
+- **Lost:** IG snapshots for 2026-11-12 to 11-17. IG keeps no history,
+  and each failed run's download was deleted by the next run's cleanup.
+- **Recovered by the normal runs:**
+  - The 11-13 to 11-19 tip emails were never downloaded (the runs failed
+    first), so they're still unseen on IMAP for the next run to pick up.
+  - Prices for still-open tips are refetched by `_still_open_tips()`.
+
+**Decisions (Ian):**
+1. **Pull validation** (`pull_db()` in `ops/lib_rclone_sync.sh`):
+   - download to `${DB_PATH}.partial`;
+   - move it to `DB_PATH` only if its size matches the remote's
+     (`remote_size()`) and it starts with SQLite's 16-byte header
+     (`is_sqlite_file()`);
+   - a failed or junk pull removes the partial and the ModTime sidecar,
+     so nothing is left for the next run to "recover".
+2. **Push validation** (`safe_push()`, which leftover recovery also goes
+   through):
+   - refuses a file that isn't SQLite, whatever the ModTime check says;
+   - after pushing, checks the remote size matches what was sent.
+   - Verified against a local fake remote: good pull; junk remote (pull
+     refused, nothing left); junk local (push and recovery refused,
+     remote untouched); good push; good leftover recovered; a remote
+     moved since pull is still refused; first-ever run.
+3. **Failure alert:**
+   - each service has `OnFailure=eodhd-failure-alert@%n.service`;
+   - that unit runs `ops/notify_failure.sh <unit>`, which sends an SMS
+     plus an email with the failed run's last 40 log lines (token
+     redacted), through the same `~/repos/alerts` notifier as the
+     disk-space alert;
+   - not added to the alphanume template (its timers are off since the
+     trial).
+   - Unlike the disk-space alert, it fires once per failed run, so a
+     stuck pipeline sends one alert a run (twice a day at most).
+
+**Not done:** `PRAGMA quick_check` on every pull or push. It takes about 2
+minutes on the 2 GB db, and the header and size checks catch this
+incident's failure. A genuinely corrupt-but-SQLite file would still get
+through until a script fails on it, and then the alert fires.
+
 ---
 
 ## outcomes design (2026-10-07)

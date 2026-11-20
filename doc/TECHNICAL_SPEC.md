@@ -638,6 +638,12 @@ this script's schedule — see `doc/DESIGN_DECISIONS.md` ("disk-space alert").
 It alerts via `~/repos/alerts`' existing email/SMS notifier when free space
 on `/` drops below 1 GiB.
 
+Every service also has `OnFailure=eodhd-failure-alert@%n.service`, which
+runs `ops/notify_failure.sh` to send the same SMS/email alert, with the
+failed run's last log lines. `ops/lib_rclone_sync.sh` refuses to keep a
+pulled db, or push one, unless it's the expected size and a SQLite file.
+See `doc/DESIGN_DECISIONS.md` ("sda.db replaced by an error page").
+
 ### Historical tip backfill (added 2026-10-12)
 `--mode backfill` (with required `--start-date`/`--end-date`, inclusive)
 parses and fetches tips for a historical date range the normal runs never

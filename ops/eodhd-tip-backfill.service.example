@@ -12,6 +12,7 @@
 Description=One-time historical tip backfill batch (see doc/DESIGN_DECISIONS.md, "historical tip backfill")
 Wants=network-online.target
 After=network-online.target
+OnFailure=eodhd-failure-alert@%n.service
 
 [Service]
 Type=oneshot

@@ -8,6 +8,7 @@
 Description=EODHD Sunday 5-minute intraday price fetch
 Wants=network-online.target
 After=network-online.target
+OnFailure=eodhd-failure-alert@%n.service
 
 [Service]
 Type=oneshot

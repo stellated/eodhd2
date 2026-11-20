@@ -1,0 +1,17 @@
+# Copy to ops/eodhd-failure-alert@.service (drop the .example), edit the
+# User=/WorkingDirectory=/ExecStart= paths for this machine, then symlink
+# into /etc/systemd/system/ and `systemctl daemon-reload`. Not enabled
+# directly: each service starts it via
+#   OnFailure=eodhd-failure-alert@%n.service
+# (%n = the failed unit's full name, passed to notify_failure.sh). Gitignored
+# because of the host-specific paths -- see doc/DESIGN_DECISIONS.md
+# ("sda.db replaced by an error page").
+
+[Unit]
+Description=Alert that %i failed
+
+[Service]
+Type=oneshot
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/repos/eodhd2
+ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/notify_failure.sh %i

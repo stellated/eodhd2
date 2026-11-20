@@ -8,6 +8,7 @@
 Description=EODHD Saturday price fetch (Friday's session) and weekly snapshot
 Wants=network-online.target
 After=network-online.target
+OnFailure=eodhd-failure-alert@%n.service
 
 [Service]
 Type=oneshot
