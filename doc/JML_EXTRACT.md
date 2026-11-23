@@ -46,7 +46,7 @@ Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's 
 | `periods` | `period` | Start and end, and the span every stock-period in it gets. |
 | `draw` | `period, code` | The 600 in-sample stock-periods: `band`, `draw_rank` (place in the band's seeded order), `inclusion_prob`, `eligible_in_pool` (in-sample pool size in the band), `seed`, `drawn_at`. |
 | `draw_rejects` | `period, code` | In-sample stock-periods replaced by validation: `reason`, `replaced_by`. |
-| `daily` | `code, timestamp` | Daily bars for the drawn stocks within their spans, plus SPY over all spans. `op hi lo cl` as traded, `ac` adjusted (as of the fetch, 2026-11-06 to 08), `vo`; rows with `vo = 0` are padding (prices carried forward). |
+| `daily` | `code, timestamp` | Daily bars for the drawn stocks within their spans, plus SPY over all spans. `op hi lo cl` as traded, `ac` adjusted (as of the fetch, 2026-11-06 to 23: `fetch_status.fetched_at`), `vo`; rows with `vo = 0` are padding (prices carried forward). |
 | `fetch_status` | `period, code` | Each fetch: `status` (`ok`/`error`), first and last bar with volume, `error`. SPY is period 0. |
 | `series_gaps` | `period, code` | Stock-periods whose bars stop early or start late, or that EODHD had nothing for (`kind` below). Listed, never dropped. |
 | `series_events` | `period, code` | What happened to each stopped series, researched from primary sources (see "Stopped series" below). |
@@ -100,18 +100,34 @@ Acquirers are named only where a holder received their shares; a cash deal's buy
   - `HTZ-R-W` holds the old Hertz's bars, through its 2020 bankruptcy; it isn't Hertz's rights.
   - `_old` codes (e.g. `EV_old2`, the old Eaton Vance) are EODHD's names for an earlier company under a reused symbol.
 
-## This build: `jml_insample_2026-11-08.db`
+## This build: `jml_insample_2026-11-23.db`
+
+Replaces `jml_insample_2026-11-08.db`: the stopped series are researched, and three bad series found while doing so are replaced. Built from `jml.2026-11-23b.db` (`extract_info.jml_db_*`), eodhd2 commit 3494dba.
 
 **Size and coverage**
-- 108 MB. 600 stock-periods, 528 distinct stocks (some drawn in two or more periods); 873,900 daily rows. EODHD returned data for every one.
-- A median stock-period has 1,571 trading days, the full span.
+- 108 MB. 600 stock-periods, 527 distinct stocks (some drawn in two or more periods); 872,643 daily rows. EODHD returned data for every one.
 - SPY: 2,909 sessions, 2014-10-20 to 2026-05-14.
 
 **The sample**
 - In-sample pools per band and period: 539-799 above $50m, 578-645 at $10m-50m, 613-703 at $1m-10m (`pool_counts`), so inclusion probabilities are 4-7%.
-- 513 of the 600 are in OT (218 of 240, 152 of 180, 143 of 180 by band); 7 are `venue_inferred`.
-- Validation replaced 7 in-sample stock-periods (`draw_rejects`): 2 blended codes (real bars on 28% and 88% of sessions), 2 foreign listings, and 3 bad price series (one code in two periods, and a Russian listing).
+- 514 of the 600 are in OT (218 of 240, 152 of 180, 144 of 180 by band); 7 are `venue_inferred`.
+- Validation replaced 10 in-sample stock-periods (`draw_rejects`): 2 blended codes (real bars on 28% and 88% of sessions), 2 foreign listings, 3 bad price series (one code in two periods, and a Russian listing), and, new in this build:
+  - RLOG (period 3): two securities spliced. Rand Logistics to 2018-01-04 (last close $0.15; delisted, then Chapter 11 with nothing for shareholders), and an unidentified security from 2018-01-05 ($9.35 to $23). Replaced by GOL.
+  - RRD (period 1): two weeks at about 1% of the price (2015-12-17 to 12-31), with `ac` on a different basis either side. Replaced by KAI.
+  - CBD (period 3): `ac` triples on 2016-01-04 with no event behind it. Replaced by LDL.
 
-**`series_gaps`:** 22, none researched yet.
-- `stops_in_period`: 3 (HBP, PDCE, SWI: all taken over).
-- `stops_in_outcome_year`: 19, mostly takeovers and mergers (e.g. MLNX, LM, HDS, RP, NATI, PXD, EXAS); also CHL (China Mobile, delisted by US sanctions in 2021) and ONDK.
+**Changes from the 2026-11-08 build**
+- EXAS's first fetch had stopped at 2025-11-19 (an EODHD gap, not an event). Refetched, it runs to its last trade, 2026-03-20.
+- `ac` in the refetched or new series (EXAS, TAST, AVDL, GOL, KAI, LDL) is as of 2026-11-23; elsewhere it's as before.
+
+**`series_gaps`: 21, all researched** (`series_events`; RLOG's has gone with it).
+- `stops_in_period`: 3 (HBP, PDCE, SWI). `stops_in_outcome_year`: 18.
+- Events: 11 cash takeovers, 2 cash plus CVR (AVDL, ETNB), 5 stock mergers (LPT, PDCE, PXD, HOUS, RDFN), 1 cash and stock (ONDK), 1 cash-or-stock election (SBOW), 1 foreign delisting (CHL). No bankruptcies.
+- No CVR has paid anything yet (as of 2026-11-23).
+- TAST and AVDL lack their final session in EODHD (still so on refetch); their last bar is the session before.
+
+**`event_checks`:** the last close against the deal terms.
+- Cash deals: within 0.1% of the cash price, except ONDK (cash and stock, 0.8% below).
+- Stock deals: within 0.5% of ratio x the acquirer's close.
+- AVDL closed 3.0% and ETNB 2.3% above their cash price: the market's value for their CVRs, which `implied` leaves out.
+- CHL isn't in `event_checks` (its follow-on isn't in USD). Done by hand: its last five ADS closes were 7.8% below to 2.8% above 5 x 0941.HK / USDHKD (2.8% above on the last day), since Hong Kong closes about 14 hours before New York.
