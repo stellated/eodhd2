@@ -2292,11 +2292,18 @@ separate bulk pull.
   every stock deal's within 0.8% of ratio x the acquirer's close; CHL's
   ADS against 5 Hong Kong shares differs by a few percent (different
   closing times during the delisting).
-- jml's guesses were right except TAST (a cash take-private, but not by
+- jml's guesses were right except TAST (a cash takeover, but not by
   the buyer jml guessed) and AVDL (raised to $21.00 after a rival bid);
   PDCE's ratio is 0.4638 and ONDK's terms 0.092 ENVA + $0.12.
+- **Sources are the target's own filings** (or, for a share deal, a
+  named follow-on company's). Five first-draft links were the cash
+  buyer's (a press release, and SEC paths under the buyer's CIK, one of
+  them a hold-out stock); each was replaced by the target's closing 8-K,
+  which states the same price. The filings themselves still name the
+  buyer: "not recorded" keeps it out of the extract, it doesn't make it
+  unknowable.
 
-**Source:** built from `jml.2026-11-23.db`, a copy of `~/data/jml.db`
+**Source:** built from `jml.2026-11-23b.db`, a copy of `~/data/jml.db`
 uploaded to `onedrive:Data/StockDataAnalytics/mars/`, per "Extracts are
 built from a named, kept snapshot".
 

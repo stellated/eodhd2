@@ -71,7 +71,7 @@ A series that stops is usually a takeover, a rename or a bankruptcy. Excluding t
 
 ### Stopped series (`series_events`)
 
-Every `stops_in_period` / `stops_in_outcome_year` row has a `series_events` row (the build refuses otherwise), researched from SEC filings or the parties' releases (`source`). The bars themselves aren't changed: `daily` still ends at the last trade, and the value after it comes from the event.
+Every `stops_in_period` / `stops_in_outcome_year` row has a `series_events` row (the build refuses otherwise), researched from SEC filings, the target's own wherever it filed one (`source`). The bars themselves aren't changed: `daily` still ends at the last trade, and the value after it comes from the event.
 
 | column | meaning |
 |---|---|
