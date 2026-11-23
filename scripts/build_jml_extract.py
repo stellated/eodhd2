@@ -19,7 +19,8 @@ span.
 
 Tables written: draw, draw_rejects (in-sample stock-periods replaced by
 jml_screen.py validate, and why), daily, fetch_status, eligible, pool_counts,
-screen_dropped, series_gaps, periods, extract_info. The checks run at the
+screen_dropped, series_gaps, series_events, follow_on_daily, follow_on_status,
+event_checks, periods, extract_info. The checks run at the
 end; a failure raises before the file is marked read-only.
 
   build_jml_extract.py --jml-db ~/data/jml.db --out jml_insample.db
@@ -121,6 +122,15 @@ def build(src_path: Path, out_path: Path, origin: str | None = None) -> None:
            OR f.first_date > date(p.span_from, ?)""",
                 (f"-{SHORT_DAYS} days", f"-{SHORT_DAYS} days", f"+{SHORT_DAYS} days"))
 
+    # CHANGED (2026-11-23): what happened to each stopped series, the
+    # follow-on bars (acquirer, other listing, FX), and the last closes set
+    # against the deal terms (jml's proposals/eodhd2-series-gaps.md)
+    out.execute("CREATE TABLE series_events AS SELECT e.* FROM j.series_events e "
+                "JOIN draw USING (period, code)")
+    out.execute("CREATE TABLE follow_on_daily AS SELECT * FROM j.follow_on_daily")
+    out.execute("CREATE TABLE follow_on_status AS SELECT * FROM j.follow_on_status")
+    event_checks(out)
+
     info = {
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "eodhd2_commit": git_commit(), "source": str(src_path), **sources,
@@ -142,12 +152,40 @@ def build(src_path: Path, out_path: Path, origin: str | None = None) -> None:
     log.info("built %s (%.0f MB)", out_path, out_path.stat().st_size / 1e6)
 
 
+def event_checks(out: sqlite3.Connection, n_last: int = 5) -> None:
+    """For each researched stop with deal terms, the stock's last n_last real
+    closes beside what the terms imply on the same date: cash, or ratio x
+    the follow-on close (+ cash). A close far from the implied value means
+    the terms or the mapping are wrong. FX-only follow-ons are left out."""
+    out.execute("""CREATE TABLE event_checks (period INTEGER, code TEXT, date TEXT,
+        close REAL, implied REAL, gap REAL, PRIMARY KEY (period, code, date))""")
+    events = out.execute("""SELECT period, code, cash_per_share, follow_code, follow_ratio,
+        follow_currency FROM series_events WHERE event NOT IN ('rename', 'bad_series')
+        AND (cash_per_share IS NOT NULL OR follow_code IS NOT NULL)""").fetchall()
+    for period, code, cash, follow, ratio, currency in events:
+        if follow and currency not in (None, "USD"):
+            continue
+        rows = out.execute("""SELECT d.date, d.cl, f.cl FROM daily d
+            LEFT JOIN follow_on_daily f ON f.code = ? AND f.date = d.date
+            JOIN periods p ON p.period = ? WHERE d.code = ? AND d.vo > 0
+            AND d.date BETWEEN p.span_from AND p.span_to
+            ORDER BY d.date DESC LIMIT ?""", (follow, period, code, n_last)).fetchall()
+        for d, close, fcl in rows:
+            implied = float(cash or 0) + (float(ratio) * fcl if follow and fcl is not None else 0)
+            if follow and fcl is None:
+                implied = None
+            out.execute("INSERT INTO event_checks VALUES (?, ?, ?, ?, ?, ?)",
+                        (period, code, d, close, implied,
+                         close / implied - 1 if implied else None))
+
+
 def check(out: sqlite3.Connection) -> None:
     """Hard checks; any failure stops the build."""
     for table, col in [("draw", "code"), ("draw_rejects", "code"),
                        ("draw_rejects", "replaced_by"), ("daily", "code"), ("fetch_status", "code"),
                        ("eligible", "code"), ("screen_dropped", "code"),
-                       ("series_gaps", "code")]:
+                       ("series_gaps", "code"), ("series_events", "code"),
+                       ("series_events", "follow_code"), ("follow_on_daily", "code")]:
         n = out.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IN "
                         f"(SELECT code FROM temp.hold)").fetchone()[0]
         if n:
@@ -169,6 +207,11 @@ def check(out: sqlite3.Connection) -> None:
         WHERE d.code = b.code AND b.date BETWEEN p.span_from AND p.span_to)""").fetchone()[0]
     if n:
         raise SystemExit(f"{n} daily rows outside their stock's spans")
+    n = out.execute("""SELECT COUNT(*) FROM series_gaps g WHERE kind LIKE 'stops%'
+        AND NOT EXISTS (SELECT 1 FROM series_events e
+                        WHERE e.period = g.period AND e.code = g.code)""").fetchone()[0]
+    if n:
+        raise SystemExit(f"{n} stopped series have no series_events row")
     for kind, n in out.execute("SELECT kind, COUNT(*) FROM series_gaps GROUP BY 1"):
         log.info("series_gaps %s: %d", kind, n)
     log.info("checks passed")

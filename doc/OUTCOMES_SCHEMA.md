@@ -110,6 +110,17 @@ volume. Day counting for the windows still includes such days.
   bar's open if it gapped past it. A gap through the target fills better
   than the target; a gap through the stop fills worse than the stop (so gap
   risk is already in `r_multiple`).
+- **Target on the entry bar (from 2026-11-21):** if the entry bar opened
+  above the zone and fell into it, its open and possibly its high came
+  before the entry. It exits at the target only if it **closed at or above
+  the target**, and then fills at the target, never the open; otherwise the
+  position stays open and later bars decide it. Entries from below, or at
+  an open inside the zone, are unaffected (the target can only have come
+  after the entry). Before this, such a bar sold at its open when it opened
+  at/above the target, a price from before the buy; 36 rows changed
+  when they were recomputed (see `doc/DESIGN_DECISIONS.md`, "Entry bar: no target exit
+  from before the entry"). Extracts record the rules in force in
+  `extract_info.outcomes_rules`.
 - **Time exit:** the close of the last real-volume bar on the deadline day.
 - **Slippage:** a flat 10 basis points (0.10%) per side, always against the
   trade: buys pay more, sells receive less. The `*_trigger_price` columns
@@ -123,9 +134,9 @@ the trade** is assumed and the row is tagged:
 
 | `same_bar` | What the bar did | Result assumed |
 |---|---|---|
-| `entry_target` | Entry bar also reached the target | Entered, then exited at target on that bar (no stop involved, so no conflict) |
+| `entry_target` | Entry bar also reached the target (after an entry from above, only if it closed at/above the target) | Entered, then exited at the target on that bar |
 | `entry_stop` | Entry bar also reached the stop | Entered, then stopped out on that bar (`closed_stop`) |
-| `entry_target_stop` | Entry bar reached zone, target and stop | Entered, then stopped out (`closed_stop`) |
+| `entry_target_stop` | Entry bar reached zone, target and stop (target counted as above) | Entered, then stopped out (`closed_stop`) |
 | `target_stop` | A later bar reached both target and stop | Stopped out (`closed_stop`) |
 | NULL | No same-bar event | |
 

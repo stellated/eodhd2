@@ -64,6 +64,7 @@ from extract_source import add_origin_arg, source_info  # noqa: E402
 from eodhd_io import (  # noqa: E402
     DEFAULT_N1,
     DEFAULT_N2,
+    OUTCOMES_RULES,
     Database,
     _get_calendar,
     _n_sessions_before,
@@ -381,6 +382,9 @@ def main() -> None:
         "ig_snapshots": ", ".join(ig_files),
         "window_gaps": ", ".join(f"{t} {n}" for t, n in n_gaps) or "none",
         "outcome_gaps": str(n_out_gaps),
+        # CHANGED: the outcomes trigger rules this build's outcomes rows
+        # were computed under (see doc/OUTCOMES_SCHEMA.md).
+        "outcomes_rules": OUTCOMES_RULES,
     }
     out.executemany("INSERT INTO extract_info VALUES (?, ?)", info.items())
     out.commit()

@@ -130,3 +130,74 @@ def test_pre_period_problem(tmp_path):
     assert "26 December" in pre_period_problem(db, "VIENNA.US", start)
     assert "Russian" in pre_period_problem(db, "NLMK.US", start)
 
+
+
+# --- load_events (2026-11-23) ---------------------------------------------
+
+import sqlite3  # noqa: E402
+
+import pytest  # noqa: E402
+
+import scripts.jml_screen as js  # noqa: E402
+
+EVENT_HEADER = ",".join(js.EVENT_COLUMNS)
+
+
+class _FakeApi:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, path, **params):
+        self.calls.append((path, params))
+
+        class R:
+            text = ("Date,Open,High,Low,Close,Adjusted_close,Volume\n"
+                    "2020-06-30,2,2,2,2,2,100\n")
+        return R()
+
+
+def _events_db(tmp_path):
+    db = sqlite3.connect(tmp_path / "jml.db")
+    db.executescript("""
+        CREATE TABLE stock_pool (code TEXT PRIMARY KEY, sample TEXT);
+        INSERT INTO stock_pool VALUES ('IN.US', 'in_sample'), ('HOLD.US', 'hold_out');
+        CREATE TABLE draw (period INTEGER, code TEXT, sample TEXT);
+        INSERT INTO draw VALUES (1, 'IN.US', 'in_sample'), (1, 'HOLD.US', 'hold_out');
+        CREATE TABLE fetch_status (period INTEGER, code TEXT, last_date TEXT);
+        INSERT INTO fetch_status VALUES (1, 'IN.US', '2020-06-30'), (1, 'HOLD.US', '2020-06-30');
+    """)
+    return db
+
+
+def _write_events(tmp_path, monkeypatch, row):
+    csv = tmp_path / "events.csv"
+    csv.write_text(EVENT_HEADER + "\n" + row + "\n")
+    monkeypatch.setattr(js, "EVENTS_CSV", csv)
+
+
+def test_load_events_stores_events_and_follow_on_bars(tmp_path, monkeypatch):
+    db = _events_db(tmp_path)
+    _write_events(tmp_path, monkeypatch,
+                  "1,IN.US,stock_merger,,2020-07-01,2020-06-30,,ACQ.US,0.5,USD,,,,,src,")
+    api = _FakeApi()
+    js.load_events(db, api)
+    assert db.execute("SELECT code, follow_code FROM series_events").fetchall() == [
+        ("IN.US", "ACQ.US")]
+    assert db.execute("SELECT code, date, cl FROM follow_on_daily").fetchall() == [
+        ("ACQ.US", "2020-06-30", 2.0)]
+    assert api.calls[0][1]["from"] == "2020-05-16"  # 45 days before the stop
+
+
+def test_load_events_refuses_a_hold_out_stock_period(tmp_path, monkeypatch):
+    db = _events_db(tmp_path)
+    _write_events(tmp_path, monkeypatch, "1,HOLD.US,cash_takeover,,,,10,,,,,,,,src,")
+    with pytest.raises(SystemExit, match="not an in-sample"):
+        js.load_events(db, _FakeApi())
+
+
+def test_load_events_refuses_a_hold_out_follow_on(tmp_path, monkeypatch):
+    db = _events_db(tmp_path)
+    _write_events(tmp_path, monkeypatch,
+                  "1,IN.US,stock_merger,,,,,HOLD.US,1,USD,,,,,src,")
+    with pytest.raises(SystemExit, match="hold-out stock"):
+        js.load_events(db, _FakeApi())

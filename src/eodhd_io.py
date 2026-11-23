@@ -94,6 +94,15 @@ DEFAULT_N2: int = 20
 # see doc/DESIGN_DECISIONS.md, "outcomes table schema".
 DEFAULT_SLIPPAGE_BPS: float = 10
 
+# CHANGED (2026-11-21): which outcomes trigger rules are in force, recorded in
+# each analysis extract's extract_info (key outcomes_rules) so results can say
+# which rules they were computed under. Add a dated clause when a rule changes.
+OUTCOMES_RULES = (
+    "2026-11-21 entry bar: an entry from above (bar opened above "
+    "entry_zone_high) takes a target exit on the entry bar only if the bar "
+    "closed at/above the target, filled at the target, never the open"
+)
+
 # Columns EODHD's CSV responses must contain. Shared between the network
 # fetch path (_eodhd_fetch_csv, validated as soon as the HTTP response comes
 # back) and the file-based path (csv2pandas_daily/csv2pandas_intraday).
@@ -1563,6 +1572,12 @@ def _check_open(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
     possible; allowed, logged, and recorded in same_bar (along with a
     target+stop collision on a later bar) so analysis can segment on it.
 
+    On the entry bar, an entry from above (opened above entry_zone_high)
+    takes a target exit only if the bar closed at/above the target, and
+    then fills at the target, never the open (worst case: the high may
+    have come before the entry). Entries from below or at an open inside
+    the zone are unaffected.
+
     Trigger checks and the time-exit fill only ever consider vo > 0 bars --
     same "delay all trades until a bar with volume" reasoning as
     _check_pending() above. If the window has closed but no real-volume bar
@@ -1575,10 +1590,22 @@ def _check_open(pos: dict, bars: pl.DataFrame, tip: dict) -> dict:
     # deadline day's close, not the latest bar the table happens to hold.
     real_bars = _window_bars(bars, pos["buy_date"], tip["holding_period_high"] + 1)
     for bar in real_bars.iter_rows(named=True):
+        entry_bar = bar["timestamp"] == pos["buy_timestamp"]
         hit_target, fill_t = _level_crossed(bar, tip["target"], direction="up")
         hit_stop, fill_s = _level_crossed(bar, tip["stop"], direction="down")
+        # CHANGED (2026-11-21): an entry bar that opened above the zone and
+        # fell into it may have made its high before the entry, so its high
+        # (and its open, which certainly came first) can't count as a target
+        # exit. Only a close at/above the target proves the price crossed the
+        # target after entering; then the fill is the target, not the open.
+        # See doc/DESIGN_DECISIONS.md, "Entry bar: no target exit from
+        # before the entry".
+        if entry_bar and hit_target and bar["op"] > tip["entry_zone_high"]:
+            if bar["cl"] >= tip["target"]:
+                fill_t = tip["target"]
+            else:
+                hit_target, fill_t = False, None
         if hit_target or hit_stop:
-            entry_bar = bar["timestamp"] == pos["buy_timestamp"]
             touched = (["entry"] if entry_bar else []) + \
                 (["target"] if hit_target else []) + (["stop"] if hit_stop else [])
             same_bar = "_".join(touched) if len(touched) > 1 else None

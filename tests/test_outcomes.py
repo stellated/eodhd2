@@ -339,6 +339,62 @@ def test_check_open_same_bar_as_entry_warns(caplog):
     assert result["same_bar"] == "entry_target"
     assert any("same bar as entry" in r.message for r in caplog.records)
 
+# Entry bar, entry from above (opened above entry_zone_high = 10.5): its
+# high may have come before the entry, so only a close at/above the target
+# (12.0) counts as a target exit, filled at the target. Added 2026-11-21.
+
+def _open_pos():
+    return _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,
+                buy_trigger_price=10.5, buy_price=10.5, risk_per_share=1.5)
+
+@pytest.mark.parametrize("op", [12.5, 11.0])  # opened above target / between zone and target
+def test_entry_bar_from_above_closing_below_target_is_no_target_exit(op):
+    bars = _bars([_bar(1, date(2026, 1, 5), "09:30:00", op, max(op, 12.3), 10.3, 11.0)])
+    result = _check_open(_open_pos(), bars, _tip())
+    assert result["status"] == "open"
+
+@pytest.mark.parametrize("op", [12.5, 11.0])
+def test_entry_bar_from_above_closing_at_target_fills_at_target_not_open(op):
+    bars = _bars([_bar(1, date(2026, 1, 5), "09:30:00", op, max(op, 12.3), 10.3, 12.2)])
+    result = _check_open(_open_pos(), bars, _tip())
+    assert result["status"] == "closed_target"
+    assert result["sell_trigger_price"] == 12.0
+    assert result["same_bar"] == "entry_target"
+
+def test_entry_bar_from_above_target_on_later_bar_counts_normally():
+    bars = _bars([
+        _bar(1, date(2026, 1, 5), "09:30:00", 12.5, 12.5, 10.3, 11.0),
+        _bar(2, date(2026, 1, 5), "09:35:00", 12.4, 12.6, 12.3, 12.5),  # gap above target
+    ])
+    result = _check_open(_open_pos(), bars, _tip())
+    assert result["status"] == "closed_target"
+    assert result["sell_trigger_price"] == 12.4  # later bar's gap rule still applies
+    assert result["same_bar"] is None
+
+def test_entry_bar_from_above_reaching_stop_records_entry_stop():
+    bars = _bars([_bar(1, date(2026, 1, 5), "09:30:00", 12.5, 12.5, 8.8, 9.5)])
+    result = _check_open(_open_pos(), bars, _tip())
+    assert result["status"] == "closed_stop"
+    assert result["sell_trigger_price"] == 9.0
+    assert result["same_bar"] == "entry_stop"
+
+def test_entry_bar_from_below_target_still_counts():
+    pos = _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,
+               buy_trigger_price=10.0, buy_price=10.0, risk_per_share=1.0)
+    bars = _bars([_bar(1, date(2026, 1, 5), "09:30:00", 9.8, 12.1, 9.7, 11.0)])
+    result = _check_open(pos, bars, _tip())
+    assert result["status"] == "closed_target"
+    assert result["sell_trigger_price"] == 12.0
+    assert result["same_bar"] == "entry_target"
+
+def test_pending_entry_from_above_gapping_over_target_stays_open():
+    """End to end from pending: the pre-fix code sold this at the 12.5 open."""
+    pos = _pos()
+    bars = _bars([_bar(1, date(2026, 1, 5), "09:30:00", 12.5, 12.5, 10.3, 11.0)])
+    result = _advance_position(pos, bars, _tip())
+    assert result["status"] == "open"
+    assert result["buy_trigger_price"] == 10.5
+
 def test_check_open_time_exit_sells_at_deadline_day_close():
     tip = _tip(holding_period_high=1)
     pos = _pos(status="open", buy_date=date(2026, 1, 5), buy_timestamp=1,

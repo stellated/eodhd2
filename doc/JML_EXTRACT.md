@@ -35,7 +35,7 @@ At each period's **screen date** (the last session before it starts), from every
 
 Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's search (LUNA and TBPH among them). They were added by hand. One code's bad prices (HLAN, about $19,800 a share) put it out.
 
-**Validation** (on data from before the period only, so a later collapse can't remove a stock): a drawn stock-period is replaced by the next stock in its band's seeded order if its bars trade on fewer than 90% of SPY's sessions in the 5 years before the period (EODHD blending another company's bars into the code), if it never trades on a 26 December that was a US session (a foreign listing under a US code), or if it's on a short hand-checked list of other bad price series. `draw_rejects` lists the in-sample replacements and why.
+**Validation** (on data from before the period only, so a later collapse can't remove a stock): a drawn stock-period is replaced by the next stock in its band's seeded order if its bars trade on fewer than 90% of SPY's sessions in the 5 years before the period (EODHD blending another company's bars into the code), if it never trades on a 26 December that was a US session (a foreign listing under a US code), or if it's on a short hand-checked list of other bad price series. That list now includes codes whose `ac` jumps more than 3x either way in one day before the period with no event behind it (in-sample series scanned 2026-11-23: a splice of two companies, a fortnight of junk bars, a change of price basis). Real moves of that size (meme spikes, trial results) were checked and kept. `draw_rejects` lists the in-sample replacements and why.
 
 **Bands** (by that median turnover) and draw sizes: above $50m (40), $10m-50m (30), $1m-10m (30). Within each band and period, a seeded shuffle of the in-sample pool. **Inclusion probability** is the band's draw size over its in-sample pool size (`draw.inclusion_prob`), so results can be weighted to "the average stock" or "the average dollar".
 
@@ -49,6 +49,10 @@ Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's 
 | `daily` | `code, timestamp` | Daily bars for the drawn stocks within their spans, plus SPY over all spans. `op hi lo cl` as traded, `ac` adjusted (as of the fetch, 2026-11-06 to 08), `vo`; rows with `vo = 0` are padding (prices carried forward). |
 | `fetch_status` | `period, code` | Each fetch: `status` (`ok`/`error`), first and last bar with volume, `error`. SPY is period 0. |
 | `series_gaps` | `period, code` | Stock-periods whose bars stop early or start late, or that EODHD had nothing for (`kind` below). Listed, never dropped. |
+| `series_events` | `period, code` | What happened to each stopped series, researched from primary sources (see "Stopped series" below). |
+| `follow_on_daily` | `code, date` | Daily bars of what a holder ended up in: an acquirer's shares, the same shares on another exchange, or an FX rate (`op hi lo cl ac vo`, as EODHD serves them, unpadded, on that market's own calendar). From 45 days before the stop to the span end. |
+| `follow_on_status` | `code` | Each follow-on fetch: range, rows, time. |
+| `event_checks` | `period, code, date` | The stock's last 5 closes beside what its deal terms imply that day (`implied`, `gap` = close / implied - 1). |
 | `eligible` | `period, code` | Every eligible stock outside the hold-out pool, per period: `band`, `median_turnover`, `close`, `ot` (in that month's Alphanume Optionable Tickers snapshot), `venue_inferred`, `exchange` (current or last), `name`, `reused_symbol` (the code is in both symbol lists). |
 | `pool_counts` | `period, band` | Eligible stocks per band, in each pool (the hold-out pool as a count only). |
 | `screen_dropped` | `period, code` | Why other tickers trading on the screen date were left out (`reason`, `detail`); rows naming a hold-out stock are removed. |
@@ -63,7 +67,26 @@ Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's 
 | `starts_late` | The first bar is after the span starts (the 5-year screen used bulk data; the stock's own series disagrees). |
 | `no_data` | EODHD's daily endpoint returned nothing. |
 
-A series that stops is usually a takeover, a rename or a bankruptcy. **These haven't been researched yet:** no aliases, deal prices or bankruptcy values are applied, so a stopped series simply ends. Excluding these stocks would be survivorship bias. Treat each as its own case, and ask eodhd2 for the research (as done for the tips, `TICKER_ALIASES.md`) before relying on returns that cross the stop.
+A series that stops is usually a takeover, a rename or a bankruptcy. Excluding these stocks would be survivorship bias, so each is researched instead.
+
+### Stopped series (`series_events`)
+
+Every `stops_in_period` / `stops_in_outcome_year` row has a `series_events` row (the build refuses otherwise), researched from SEC filings or the parties' releases (`source`). The bars themselves aren't changed: `daily` still ends at the last trade, and the value after it comes from the event.
+
+| column | meaning |
+|---|---|
+| `event` | `cash_takeover`, `cash_plus_cvr`, `stock_merger`, `cash_and_stock`, `cash_or_stock_election`, `foreign_delisting` |
+| `announced`, `effective_date`, `last_trade_date` | Announcement, closing, and last US trading day per the sources (the last bar in `daily` can be a session earlier where EODHD lacks the final day; `notes` says so) |
+| `cash_per_share` | Cash per share paid at closing, USD |
+| `follow_code`, `follow_ratio`, `follow_currency` | Shares received per share held, and in what; their bars are in `follow_on_daily` |
+| `fx_code` | An FX series in `follow_on_daily` (CHL only: `USDHKD.FOREX`, HKD per USD) |
+| `cvr_terms`, `cvr_paid` | Contingent value rights: terms, and what has been paid so far |
+| `recovery` | For a bankruptcy: what equity received (none in this build) |
+| `notes` | Mechanics: two-step mergers, elections, missing final bars, how to value CHL |
+
+A holder's value after the stop: `cash_per_share` + `follow_ratio` x the follow-on's price (converted with `fx_code` where given), plus any CVR, which is valued by jml (unpaid so far in this build). For an election (`cash_or_stock_election`), `follow_ratio` is the default a passive holder got; `notes` gives the alternatives.
+
+Acquirers are named only where a holder received their shares; a cash deal's buyer isn't needed for the value and isn't recorded.
 
 ## Caveats
 

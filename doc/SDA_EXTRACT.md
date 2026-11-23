@@ -57,7 +57,7 @@ symbol the newsletter tipped (see `ticker_aliases`).
 | `ig_margins` | `download_date, code` | IG's offering for tipped codes: `new_positions`, `shortable`, borrow rate, tier-1 limit and rate. `ig_code`/`renamed_on` as in eodhd2's `ig_margins_resolved`. `source_modified` is when IG generated the file. |
 | `window_gaps` | `tablename, code, tip_date` | Tips with fewer than 20 sessions of `daily` or `intraday_5m` after the tip date. |
 | `outcome_gaps` | `code, tip_date` | Tips without a finished outcome (none in this build). |
-| `extract_info` | `key` | Build time, eodhd2 commit, cut-offs, the assumptions below; from builds after 2026-11-19, each source db's path, size, mtime, sha1 and origin (`sda_db_*`, `alphanume_db_*`). |
+| `extract_info` | `key` | Build time, eodhd2 commit, cut-offs, the assumptions below; from builds after 2026-11-19, each source db's path, size, mtime, sha1 and origin (`sda_db_*`, `alphanume_db_*`); from builds after 2026-11-21, `outcomes_rules`, the outcomes trigger rules in force. |
 
 ## When data became known
 

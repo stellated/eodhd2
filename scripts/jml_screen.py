@@ -8,6 +8,7 @@ turnover, before anything is drawn.
   jml_screen.py draw   --db-path ~/data/jml.db
   jml_screen.py daily  --db-path ~/data/jml.db
   jml_screen.py validate --db-path ~/data/jml.db
+  jml_screen.py events --db-path ~/data/jml.db
 
 `fetch` stores, in jml.db (on mars, not sda.db):
 - `sessions`: SPY's trading days, 2014 to 2025 (1 call);
@@ -32,6 +33,15 @@ Five years: a stock qualifies if it traded on any of the 5 sessions up to
 the date 5 years before its period start. EODHD files history under the
 code it serves today (FB's 2019 bars are under META), so this matches
 the stock's own daily series.
+
+`events` (added 2026-11-23, jml's proposals/eodhd2-series-gaps.md) loads
+scripts/jml_series_events.csv, the researched answer for each in-sample
+stock-period whose series stops early, into `series_events`, and fetches
+the follow-on series a holder ended up in (an acquirer's shares, the same
+shares on another exchange, and an FX rate) into `follow_on_daily`, from
+45 days before the stop (so the deal terms can be checked against the
+last closes) to the stock-period's span end. Raw EODHD bars, no padding,
+dates in the follow-on market's own calendar.
 """
 import argparse
 import io
@@ -82,6 +92,13 @@ REJECT_BY_HAND = {
     "TRA": "closes of 43,000 to 137,000: another market's prices under a dead US code",
     "TNT": "closes of 1,310 to 31,500: not a US price series",
     "NLMK": "NLMK, the Russian steelmaker (Moscow, and London until 2022), under a US code",
+    # CHANGED (2026-11-23): found by scanning in-sample series for one-day
+    # moves in ac of more than 3x either way (jml's series-gaps request).
+    "RLOG": "two companies spliced: Rand Logistics at 0.15 on 2018-01-04, another "
+            "series at 9.35 the next day",
+    "RRD": "two weeks at about 1% of the price (2015-12-17 to 12-31), and ac on a "
+           "different basis either side",
+    "CBD": "ac jumps 3x on 2016-01-04 with no event: 2015 bars on another basis",
 }
 SEED = 20261105
 # per band: (in-sample, hold-out); Ian, 2026-10-30 and 2026-11-05
@@ -608,20 +625,90 @@ def fetch_drawn_daily(db: sqlite3.Connection, api: "Eodhd") -> None:
     log.info("daily fetch complete; %d stock-periods stop early or failed (to research)", short)
 
 
+EVENTS_CSV = Path(__file__).resolve().parent / "jml_series_events.csv"
+FOLLOW_ON_LEAD_DAYS = 45  # follow-on bars start this long before the stop
+EVENT_COLUMNS = [
+    "period", "code", "event", "announced", "effective_date", "last_trade_date",
+    "cash_per_share", "follow_code", "follow_ratio", "follow_currency", "fx_code",
+    "cvr_terms", "cvr_paid", "recovery", "source", "notes"]
+
+
+def load_events(db: sqlite3.Connection, api: "Eodhd") -> None:
+    """series_events from EVENTS_CSV (replaced each run), and follow-on bars
+    for every follow_code / fx_code it names. Every row must be an in-sample
+    stock-period; a follow-on code may not be a hold-out stock."""
+    ev = pd.read_csv(EVENTS_CSV, dtype=str, keep_default_na=False)
+    if list(ev.columns) != EVENT_COLUMNS:
+        raise SystemExit(f"{EVENTS_CSV.name}: columns {list(ev.columns)}")
+    ev = ev.astype(object).where(ev != "", None)  # empty cells -> NULL, not NaN
+    hold = {c for (c,) in db.execute("SELECT code FROM stock_pool WHERE sample = 'hold_out'")}
+    insample = set(db.execute("SELECT period, code FROM draw WHERE sample = 'in_sample'"))
+    for r in ev.itertuples():
+        if (int(r.period), r.code) not in insample:
+            raise SystemExit(f"{r.code} period {r.period}: not an in-sample stock-period")
+        for c in (r.follow_code, r.fx_code):
+            if c and c in hold:
+                raise SystemExit(f"{r.code}: follow-on {c} is a hold-out stock")
+    db.execute("DROP TABLE IF EXISTS series_events")
+    types = {"period": "INTEGER", "cash_per_share": "REAL", "follow_ratio": "REAL"}
+    db.execute("CREATE TABLE series_events ("
+               + ", ".join(f"{c} {types.get(c, 'TEXT')}" for c in EVENT_COLUMNS)
+               + ", PRIMARY KEY (period, code))")
+    db.executemany(f"INSERT INTO series_events VALUES ({', '.join('?' * len(EVENT_COLUMNS))})",
+                   [tuple(r) for r in ev.itertuples(index=False)])  # column types convert
+    db.execute("""CREATE TABLE IF NOT EXISTS follow_on_daily (code TEXT, date TEXT,
+        op REAL, hi REAL, lo REAL, cl REAL, ac REAL, vo REAL, PRIMARY KEY (code, date))""")
+    db.execute("""CREATE TABLE IF NOT EXISTS follow_on_status (code TEXT PRIMARY KEY,
+        from_date TEXT, to_date TEXT, rows INTEGER, fetched_at TEXT)""")
+    spans = {p: stock_period_span(s, e) for p, s, e in PERIODS}
+    need: dict[str, list[date]] = {}
+    for r in ev.itertuples():
+        last = db.execute("SELECT last_date FROM fetch_status WHERE period = ? AND code = ?",
+                          (int(r.period), r.code)).fetchone()[0]
+        lo = date.fromisoformat(last) - timedelta(days=FOLLOW_ON_LEAD_DAYS)
+        hi = spans[int(r.period)][1]
+        for c in (r.follow_code, r.fx_code):
+            if c:
+                rng = need.setdefault(c, [lo, hi])
+                rng[0], rng[1] = min(rng[0], lo), max(rng[1], hi)
+    for code, (lo, hi) in sorted(need.items()):
+        text = api.get(f"eod/{code}", fmt="csv", period="d",
+                       **{"from": lo.isoformat(), "to": hi.isoformat()}).text
+        pdf = pd.read_csv(io.StringIO(text))
+        if "Adjusted_close" not in pdf.columns or pdf.empty:
+            raise SystemExit(f"{code}: no bars ({text[:80]!r})")
+        pdf = pdf.rename(columns={"Date": "date", "Open": "op", "High": "hi", "Low": "lo",
+                                  "Close": "cl", "Adjusted_close": "ac", "Volume": "vo"})
+        db.execute("DELETE FROM follow_on_daily WHERE code = ?", (code,))
+        db.executemany("INSERT INTO follow_on_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                       [(code, *row) for row in pdf[["date", "op", "hi", "lo", "cl", "ac", "vo"]]
+                        .itertuples(index=False)])
+        db.execute("INSERT OR REPLACE INTO follow_on_status VALUES (?, ?, ?, ?, ?)",
+                   (code, lo.isoformat(), hi.isoformat(), len(pdf),
+                    datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        log.info("%s: %d bars %s..%s", code, len(pdf), pdf["date"].min(), pdf["date"].max())
+    db.commit()
+    print(pd.read_sql("SELECT period, code, event, effective_date, cash_per_share, follow_code, "
+                      "follow_ratio FROM series_events ORDER BY period, code", db)
+          .to_string(index=False))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("action", choices=["fetch", "report", "draw", "daily", "validate"])
+    p.add_argument("action", choices=["fetch", "report", "draw", "daily", "validate",
+                                       "events"])
     p.add_argument("--db-path", required=True, type=Path)
     p.add_argument("--alphanume-db", type=Path, default=Path.home() / "data" / "alphanume.db")
     args = p.parse_args()
     db = sqlite3.connect(args.db_path)
     for ddl in _DDL:
         db.execute(ddl)
-    if args.action in ("fetch", "daily", "validate"):
+    if args.action in ("fetch", "daily", "validate", "events"):
         load_dotenv(Path(__file__).resolve().parent.parent / ".env")
         api = Eodhd(os.environ["EODHD_API_TOKEN"])
-        {"fetch": fetch, "daily": fetch_drawn_daily, "validate": validate}[args.action](db, api)
+        {"fetch": fetch, "daily": fetch_drawn_daily, "validate": validate,
+         "events": load_events}[args.action](db, api)
     elif args.action == "draw":
         draw(db)
     else:

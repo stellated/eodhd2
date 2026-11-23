@@ -45,6 +45,17 @@ def jml_db(tmp_path, monkeypatch):
         INSERT INTO daily VALUES ('IN.US', 1, '2014-10-20', 1, 1), ('IN.US', 2, '2020-06-30', 1, 1),
             ('IN.US', 3, '2023-01-03', 1, 1),  -- outside its span
             ('HOLD.US', 1, '2015-01-02', 1, 1), ('SPY.US', 1, '2015-01-02', 1, 1);
+        CREATE TABLE series_events (period, code, event, announced, effective_date,
+            last_trade_date, cash_per_share, follow_code, follow_ratio, follow_currency, fx_code,
+            cvr_terms, cvr_paid, recovery, source, notes, PRIMARY KEY (period, code));
+        INSERT INTO series_events VALUES (1, 'IN.US', 'stock_merger', NULL, '2020-07-01',
+            '2020-06-30', '1', 'ACQ.US', '0.5', 'USD', NULL, NULL, NULL, NULL, 'x', NULL);
+        CREATE TABLE follow_on_daily (code TEXT, date TEXT, op REAL, hi REAL, lo REAL, cl REAL,
+            ac REAL, vo REAL, PRIMARY KEY (code, date));
+        INSERT INTO follow_on_daily VALUES ('ACQ.US', '2020-06-30', 2, 2, 2, 2, 2, 100);
+        CREATE TABLE follow_on_status (code TEXT PRIMARY KEY, from_date TEXT, to_date TEXT,
+            rows INTEGER, fetched_at TEXT);
+        INSERT INTO follow_on_status VALUES ('ACQ.US', '2020-05-16', '2021-01-14', 1, 'x');
     """)
     db.commit()
     db.close()
@@ -71,3 +82,31 @@ def test_extract_keeps_bars_inside_spans_and_lists_short_series(jml_db, tmp_path
         ("IN.US", "2014-10-20"), ("IN.US", "2020-06-30"), ("SPY.US", "2015-01-02")]
     assert db.execute("SELECT code, kind FROM series_gaps").fetchall() == [
         ("IN.US", "stops_in_outcome_year")]
+
+
+def test_event_checks_set_last_closes_against_deal_terms(jml_db, tmp_path):
+    out = tmp_path / "out.db"
+    bje.build(jml_db, out)
+    db = sqlite3.connect(out)
+    # 2020-06-30: close 1 against 1 cash + 0.5 x ACQ's 2 = 2
+    assert db.execute("SELECT date, close, implied, gap FROM event_checks "
+                      "WHERE date = '2020-06-30'").fetchall() == [("2020-06-30", 1, 2.0, -0.5)]
+    assert db.execute("SELECT code FROM follow_on_daily").fetchall() == [("ACQ.US",)]
+
+
+def test_build_refuses_a_stopped_series_without_an_event(jml_db, tmp_path):
+    db = sqlite3.connect(jml_db)
+    db.execute("DELETE FROM series_events")
+    db.commit()
+    db.close()
+    with pytest.raises(SystemExit, match="no series_events row"):
+        bje.build(jml_db, tmp_path / "out.db")
+
+
+def test_build_refuses_hold_out_follow_on_bars(jml_db, tmp_path):
+    db = sqlite3.connect(jml_db)
+    db.execute("UPDATE follow_on_daily SET code = 'POOL.US'")
+    db.commit()
+    db.close()
+    with pytest.raises(SystemExit, match="hold-out stock in follow_on_daily"):
+        bje.build(jml_db, tmp_path / "out.db")

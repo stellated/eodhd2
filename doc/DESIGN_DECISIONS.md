@@ -636,6 +636,24 @@ decided on a partly published or still-trading day would stay wrong.
 timezone (`_completed_sessions_only()`). The scheduled 04:00 run only has
 completed sessions anyway; this protects a manual run during the day.
 
+### Weekly runs again (2026-11-20)
+**Decision (Ian):** after the 2026-11-20 run, `eodhd-daily-update.timer`
+(weekdays) is disabled; the Saturday 04:00 New York `all-price` run
+(`eodhd-daily-update-1d.timer`, Friday's session plus the weekly
+snapshot) is the only tips/price run. It gives Ian one "how did the run
+go" review a week (Saturday evening Melbourne). Saturday rather than
+Friday night because Friday's EODHD bars may not be published by Friday
+evening.
+- `eodhd-ig-margins.timer` stays daily: IG keeps no past versions, so a
+  missed day is lost for good.
+- Tip emails are unaffected: unseen mail waits on the IMAP server and the
+  Saturday run parses the week's emails together.
+- `tip_details`/`outcomes` are now up to a week behind. That's expected,
+  not a fault. The still-open window (about 45 calendar days) is far
+  longer than a week, so no tip ages out between runs.
+- Re-enabling the weekday timer brings back the daily runs unchanged; no
+  code depends on the schedule.
+
 ### --all-emails for a second independent consumer of the same mailbox (2026-09-30)
 **Problem:** Ian plans to run `daily_update.py` manually on his Mac, against
 the same IMAP mailbox as `mars`'s scheduled runs, to build an independent
@@ -1858,6 +1876,51 @@ before their 5m windows were completed (the 2026-08-05..19 gap), which is
 never revisited once a row is terminal. All four were recomputed in
 production; closed trades 4,388 -> 4,390, total R -213.4 -> -206.1.
 
+### Entry bar: no target exit from before the entry (2026-11-21)
+**Problem (found by sda):** `_check_open()` scanned bars from
+`buy_timestamp` inclusive and applied `_level_crossed()` to the entry bar
+like any other. An entry bar that opened at/above the target and fell into
+the zone was recorded as an entry at `entry_zone_high` and a target exit
+at the bar's **open**, a price from before the buy. sda's simulator,
+written from `doc/OUTCOMES_SCHEMA.md`, matched every other row and
+differed on 19 in-sample exit prices, all of this kind.
+
+Checking every production `entry_target`/`entry_target_stop` row (67, by
+the entry bar's open) showed a second, related case:
+- **opened at/above the target (21 rows):** sold at the open, impossible;
+- **opened between the zone and the target (18):** sold at the target,
+  but the bar may have made its high before falling into the zone, so the
+  exit is unknowable from OHLC;
+- **rose into the zone from below (2), or opened in it (26):** the target
+  can only have come after the entry; fine.
+
+**Decision (Ian, option 2 of two):** on the entry bar, an entry from above
+takes a target exit only if the bar **closed at or above the target**
+(which proves the price crossed it after entering), filled at the target.
+Otherwise the position stays open and later bars decide it. If the bar
+also reached the stop, it's `closed_stop` with `same_bar = 'entry_stop'`.
+
+**Alternative rejected:** sda's minimal fix, fill at the target but keep
+the exit. It removes the impossible price but keeps the 18 unknowable
+exits, against the "assume the worst" rule used for every other same-bar
+case (target/stop collisions, entry and stop on one bar).
+
+**Effect (production, 2026-11-23):** 68 `entry_target*` rows: 39
+entries from above (21 opened at/above the target, 18 between zone and
+target), 3 from below, 26 opened in the zone. Of the 39, 9 closed
+at/above the target and stay `closed_target` at the target (6 of them had
+sold at the open); 30 are re-decided by later bars (24 later
+`closed_target`, 6 `closed_stop`). So 36 rows changed; the other 32 came
+back identical. Closed trades' total R
+-340.3 -> -354.8 (5,407 rows; the count doesn't change).
+
+**Rebuild:** terminal rows are never revisited, so every row with
+`same_bar LIKE 'entry_target%'` was deleted and `update_outcomes()`
+reseeded and recomputed them (the 28 unaffected ones come back
+identical). Extracts now record the rules in force as
+`extract_info.outcomes_rules` (`OUTCOMES_RULES` in `src/eodhd_io.py`).
+The delivered sda extract isn't rebuilt; sda's simulator has both rules.
+
 ---
 
 ## tips_io design
@@ -2188,6 +2251,54 @@ nearest is the Saturday snapshot `sda.2026-10-31.db`, taken one run later.
   prune doesn't match; the original rotates out as usual.
 - **The delivered extract isn't rebuilt.** sda keeps it read-only with
   its checksum, so its results can be rerun from that file.
+
+### jml's stopped series researched; bad series rejected (2026-11-23)
+**Problem:** jml's 2026-11-08 extract listed 22 stock-periods whose series
+stop early (`series_gaps`), unresearched. jml asked for the research
+(`jml/proposals/eodhd2-series-gaps.md`), and flagged RLOG as possibly two
+companies. Ian had expected the takeover/rename research done for the
+tips (`TICKER_ALIASES.md`) to cover this too; it hadn't, since jml.db is a
+separate bulk pull.
+
+**Decisions (Ian: a rebuilt extract, not an add-on):**
+- **Research, not aliasing.** Each stop gets a `series_events` row from
+  primary sources (`scripts/jml_series_events.csv`, loaded by
+  `jml_screen.py events`): event, dates, cash per share, shares received
+  and in what, CVR terms. The follow-on series (acquirers, 0941.HK and
+  USD/HKD for CHL) go in `follow_on_daily`, from 45 days before the stop,
+  so the extract's `event_checks` can set the last closes against the
+  terms. Unlike `ticker_aliases`, nothing is spliced into the stock's own
+  bars: jml decides how to carry a position across the event, and CVRs
+  need a valuation choice anyway.
+- **Bad series go through the existing rule.** RLOG is Rand Logistics to
+  2018-01-04 ($0.15; delisted, then Chapter 11 with nothing for equity)
+  and an unidentified security from 2018-01-05 ($9.35 to $23). A scan of
+  every in-sample series for one-day `ac` moves of more than 3x either way
+  also found RRD (two weeks at about 1% of the price, Dec 2015, and a
+  change of basis either side) and CBD (a 3x jump on 2016-01-04 with no
+  event). All three are pre-period defects, so they joined
+  `REJECT_BY_HAND` and `validate` replaced them with the next stock in
+  their band's in-sample order (KAI, LDL, GOL; checked the same way).
+  Other big moves (AMC, PHUN, NNDM, ACRS...) were real and kept. The scan
+  isn't yet part of the frozen method for the hold-out: jml's call.
+- **Acquirers in cash deals aren't recorded:** the buyer doesn't affect
+  the value, and naming it could name a hold-out stock.
+
+**Found along the way:**
+- **EXAS's first fetch stopped at 2025-11-19**, four months before its
+  last trade (2026-03-20). Not an event: a refetch returned the rest.
+  TAST and AVDL lack their final session in EODHD (still so on refetch).
+- Every cash deal's last close is within 0.1% of the deal price, and
+  every stock deal's within 0.8% of ratio x the acquirer's close; CHL's
+  ADS against 5 Hong Kong shares differs by a few percent (different
+  closing times during the delisting).
+- jml's guesses were right except TAST (a cash take-private, but not by
+  the buyer jml guessed) and AVDL (raised to $21.00 after a rival bid);
+  PDCE's ratio is 0.4638 and ONDK's terms 0.092 ENVA + $0.12.
+
+**Source:** built from `jml.2026-11-23.db`, a copy of `~/data/jml.db`
+uploaded to `onedrive:Data/StockDataAnalytics/mars/`, per "Extracts are
+built from a named, kept snapshot".
 
 ### Alphanume trial capture: raw responses first, parse later (2026-10-23)
 **Context:** alphanume now offers a 3-day free trial with full Pro access

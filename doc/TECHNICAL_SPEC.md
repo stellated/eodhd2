@@ -549,8 +549,10 @@ storage-agnostic — it just reads/writes whatever `--db-path` points at.
 `--mode {tips-only,daily-price,intraday-price,all-price,backfill}`
 (required) selects what a run actually fetches -- see
 `doc/DESIGN_DECISIONS.md` ("Price fetch every day: --mode all-price"):
-- **all-price** (the scheduled run since 2026-10-29: weekdays via
-  `eodhd-daily-update.timer`, Saturdays via `eodhd-daily-update-1d.timer`):
+- **all-price** (the scheduled run: Saturdays 04:00 New York via
+  `eodhd-daily-update-1d.timer`; weekdays too via `eodhd-daily-update.timer`
+  from 2026-10-29 to 2026-11-20, disabled since -- see
+  `doc/DESIGN_DECISIONS.md`, "Weekly runs again"):
   fetches daily OHLCV into `PRICE_TABLENAME` ("daily"), then 5-minute
   OHLCV into `INTRADAY_TABLENAME` ("intraday_5m"), then updates outcomes.
   Saturday's run also takes the weekly snapshot.
