@@ -24,12 +24,17 @@ def jml_db(tmp_path, monkeypatch):
             draw_rank INTEGER, reason TEXT, replaced_by TEXT);
         INSERT INTO draw_rejects VALUES (1, 'BADIN.US', 'above_50m', 'in_sample', 1, 'x', 'IN.US'),
             (1, 'BADHOLD.US', 'above_50m', 'hold_out', 1, 'x', 'HOLD.US');
-        CREATE TABLE eligible (period INTEGER, code TEXT, band TEXT);
-        INSERT INTO eligible VALUES (1, 'IN.US', 'above_50m'), (1, 'HOLD.US', 'above_50m'),
-            (1, 'POOL.US', 'above_50m');
+        CREATE TABLE eligible (period INTEGER, code TEXT, band TEXT, name TEXT);
+        INSERT INTO eligible VALUES (1, 'IN.US', 'above_50m', 'Insample Corp'),
+            (1, 'HOLD.US', 'above_50m', 'Holdout Energy Company'),
+            (1, 'POOL.US', 'above_50m', 'Poolco Inc');
         CREATE TABLE screen_dropped (period INTEGER, code TEXT, reason TEXT, detail TEXT);
         INSERT INTO screen_dropped VALUES (1, 'OLDPOOL.US', 'duplicate_of', 'POOL'),
-            (1, 'JUNK.US', 'price_below_2', '1.5');
+            (1, 'JUNK.US', 'price_below_2', '1.5'),
+            (1, 'HOLD-P-A.US', 'unit_note_spac', NULL),
+            (1, 'HDP.US', 'preferred', 'Holdout Energy Co Pref Series E'),
+            (1, 'PLP.US', 'preferred', 'POOLCO, Inc. 6.5% Preferred Units'),
+            (1, 'INP.US', 'preferred', 'Insample Corp Pref');
         CREATE TABLE fetch_status (period INTEGER, code TEXT, from_date TEXT, to_date TEXT,
             status TEXT, rows INTEGER, first_date TEXT, last_date TEXT, error TEXT,
             fetched_at TEXT);
@@ -69,7 +74,7 @@ def test_extract_holds_nothing_on_hold_out_stocks(jml_db, tmp_path):
     for table in ("draw", "daily", "fetch_status", "eligible", "screen_dropped", "series_gaps"):
         codes = {c for (c,) in db.execute(f"SELECT code FROM {table}")}
         assert not codes & {"HOLD.US", "POOL.US", "OLDPOOL.US"}, table
-    assert db.execute("SELECT COUNT(*) FROM screen_dropped").fetchone()[0] == 1  # JUNK only
+    assert {c for (c,) in db.execute("SELECT code FROM screen_dropped")} == {"JUNK.US", "INP.US"}
     assert db.execute("SELECT code FROM draw_rejects").fetchall() == [("BADIN.US",)]
     assert db.execute("SELECT hold_out_pool FROM pool_counts").fetchone()[0] == 2
 
@@ -110,3 +115,15 @@ def test_build_refuses_hold_out_follow_on_bars(jml_db, tmp_path):
     db.close()
     with pytest.raises(SystemExit, match="hold-out stock in follow_on_daily"):
         bje.build(jml_db, tmp_path / "out.db")
+
+
+def test_names_hold_out():
+    hold = {"AEC.US", "QQK.US"}
+    keys = bje.hold_out_name_keys(["AEC Energy Company", "QQK & Co Inc", None])
+    assert keys == {("aec", "energy"), ("qqk",)}
+    assert bje.names_hold_out("AEW.US", "AEC Energy Co Pref Series E", hold, keys)
+    assert bje.names_hold_out("QQK-PA.US", "QQK & Company. L.P. 6.75% Series A", hold, keys)
+    assert bje.names_hold_out("QQK-P-D.US", None, hold, keys)  # code root
+    assert bje.names_hold_out("OLD.US", "AEC", hold, keys)  # rename duplicate's code
+    assert not bje.names_hold_out("AECX.US", "AEC Bank Pref", hold, keys)
+    assert not bje.names_hold_out("XLN.US", "Leveraged Index Note", hold, keys)

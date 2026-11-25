@@ -9,8 +9,10 @@ In-sample is the draw's in-sample stocks. The hold-out is by stock, not
 by date (Ian, 2026-11-05): `stock_pool` marks a quarter of all eligible
 stocks as hold-out, and none of them, drawn or not, appears anywhere in
 this extract. Not their bars, not their draw rows, not their eligible
-rows, and not a screen_dropped row whose detail names one (a rename
-duplicate's kept code). Only the pool's per-band counts are given, so
+rows, and not a screen_dropped row that names one: a rename duplicate's
+kept code, a code rooted on one (`ACME-PA`), or a description starting
+with a hold-out stock's name ("Acme Energy Co Pref Series E";
+names_hold_out()). Only the pool's per-band counts are given, so
 inclusion probabilities can be checked.
 
 Each in-sample stock's bars cover its stock-period span(s): 5 years before
@@ -28,6 +30,7 @@ end; a failure raises before the file is marked read-only.
 import argparse
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -55,6 +58,37 @@ log = logging.getLogger("build_jml_extract")
 # a series is short if its last bar is this far before the span's end (the
 # span already has FETCH_MARGIN_DAYS of margin; a week more covers holidays)
 SHORT_DAYS = FETCH_MARGIN_DAYS + 7
+
+
+# words left out when matching a description to a hold-out stock's name
+LEGAL_WORDS = {"inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited",
+               "plc", "lp", "llc", "sa", "nv", "ag", "the", "and", "class", "cl", "common",
+               "stock", "shares", "ordinary", "new"}
+
+
+def _name_words(name: str | None) -> list[str]:
+    words = re.findall(r"[a-z0-9]+", re.sub(r"\bl\.p\.", "lp", (name or "").lower()))
+    return [w for w in words if w not in LEGAL_WORDS]
+
+
+def hold_out_name_keys(names) -> set[tuple[str, ...]]:
+    """Each hold-out name's first two significant words ("Acme Energy Company"
+    -> ("acme", "energy")); one word if that's all there is ("Acme Inc")."""
+    return {tuple(w[:2]) for w in map(_name_words, names) if w}
+
+
+def names_hold_out(code: str, detail: str | None, hold: set[str],
+                   keys: set[tuple[str, ...]]) -> bool:
+    """A screen_dropped row names a hold-out stock if its detail is one's code
+    (a rename duplicate), its code is rooted on one (ACME-PA.US, ACME-P-G.US), or
+    its detail starts with one's name. Errs towards dropping: a row lost from
+    screen_dropped costs an audit line, a row kept can name a hold-out stock."""
+    if f"{detail}.US" in hold:
+        return True
+    if re.split(r"[-_]", code.split(".")[0])[0] + ".US" in hold:
+        return True
+    w = _name_words(detail)
+    return tuple(w[:1]) in keys or tuple(w[:2]) in keys
 
 
 def git_commit() -> str:
@@ -106,9 +140,15 @@ def build(src_path: Path, out_path: Path, origin: str | None = None) -> None:
         SUM(e.code NOT IN (SELECT code FROM temp.hold)) AS in_sample_pool,
         SUM(e.code IN (SELECT code FROM temp.hold)) AS hold_out_pool
         FROM j.eligible e GROUP BY 1, 2""")
-    out.execute("""CREATE TABLE screen_dropped AS SELECT * FROM j.screen_dropped
-        WHERE code NOT IN (SELECT code FROM temp.hold)
-        AND COALESCE(detail, '') || '.US' NOT IN (SELECT code FROM temp.hold)""")
+    hold = {c for (c,) in out.execute("SELECT code FROM temp.hold")}
+    keys = hold_out_name_keys(n for (n,) in out.execute(
+        "SELECT DISTINCT name FROM j.eligible WHERE code IN (SELECT code FROM temp.hold)"))
+    out.execute("CREATE TABLE screen_dropped AS SELECT * FROM j.screen_dropped "
+                "WHERE code NOT IN (SELECT code FROM temp.hold)")
+    out.create_function("names_hold_out", 2,
+                        lambda code, detail: names_hold_out(code, detail, hold, keys))
+    n = out.execute("DELETE FROM screen_dropped WHERE names_hold_out(code, detail)").rowcount
+    log.info("screen_dropped: %d rows naming a hold-out stock removed", n)
 
     # series that start late or stop before the span ends: listed, not dropped
     out.execute("""CREATE TABLE series_gaps AS SELECT f.period, f.code, f.status, f.first_date,
@@ -190,8 +230,8 @@ def check(out: sqlite3.Connection) -> None:
                         f"(SELECT code FROM temp.hold)").fetchone()[0]
         if n:
             raise SystemExit(f"hold-out stock in {table}: {n} rows")
-    n = out.execute("SELECT COUNT(*) FROM screen_dropped WHERE detail || '.US' IN "
-                    "(SELECT code FROM temp.hold)").fetchone()[0]
+    n = out.execute("SELECT COUNT(*) FROM screen_dropped "
+                    "WHERE names_hold_out(code, detail)").fetchone()[0]
     if n:
         raise SystemExit(f"screen_dropped names a hold-out stock: {n} rows")
     for period, band, n_in in out.execute(
