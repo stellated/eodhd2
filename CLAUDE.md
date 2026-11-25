@@ -52,3 +52,51 @@ signal, pre-existing ones as a separate cleanup task.
 ## Git workflow
 
 Commit directly to `main` — no branch/PR process for this repo.
+
+## Data requests from the analysis repos (Ian, 2026-11-25)
+
+The analysis repos (`~/repos/analysis/<repo>`) ask for data in
+`proposals/eodhd2-<topic>.md`; the template and conventions are in
+`~/repos/analysis/analysis-common/project/eodhd2-requests.md`.
+
+**Standing authority.** For routine data-request work, act without asking
+and report once at the end:
+- commit and push here, and commit replies into the analysis repos (pull
+  first, push straight after, never force);
+- build, check, upload and verify extracts and their docs;
+- delete local scratch copies, and on OneDrive a copy that an upload of
+  mine has just replaced (an older extract, doc or snapshot of my own);
+- ticker-alias research, applied to `sda.db` through `pull_db`/`safe_push`
+  outside the timers' windows, verified with `rclone cat | cmp`.
+
+**Still ask Ian first:**
+- anything that changes method or science: a new or changed rule, a
+  redraw, what is in or out of a hold-out, `outcomes` logic;
+- touching the hold-out (scanning it, building its extract) before Ian
+  says the method is frozen;
+- production writes outside the usual pull/push path, timer or systemd
+  changes, schema changes to `sda.db`;
+- deleting anything that isn't a superseded copy of my own;
+- anything where I'm unsure which of these it is.
+
+**Replies go by git, not through Ian.** Answer a request in
+`proposals/eodhd2-<topic>.reply.md` in the requesting repo, commit and
+push, then tell Ian in one line which repos have a new reply. Only
+questions that are genuinely Ian's go to him.
+
+**Before delivering any extract** (all of these, not just the builder's
+own checks):
+1. The builder's hard checks pass, and the request's acceptance checks
+   are run and their results go in the reply.
+2. Hold-out scan: every TEXT column of every table, and the extract's
+   doc, searched for hold-out codes and issuer names (for date hold-outs:
+   no row after the cut-off in any table).
+3. No source URL or note names a party the request says to keep out (e.g.
+   a cash buyer); sources are the target's own filings.
+4. Every URL in the delivery was fetched or found by search this
+   session, never written from memory.
+5. Counts in the doc match the file (recount, don't copy).
+6. `extract_info` records the commit and source snapshot; the commit is
+   pushed before the build.
+7. The upload is verified (`rclone cat | cmp`), and no hold-out code goes
+   into a commit here (invented examples in code and tests).
