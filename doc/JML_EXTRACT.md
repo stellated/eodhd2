@@ -55,7 +55,7 @@ Six common stocks have bulk bars but are in neither symbol list, nor in EODHD's 
 | `event_checks` | `period, code, date` | The stock's last 5 closes beside what its deal terms imply that day (`implied`, `gap` = close / implied - 1). |
 | `eligible` | `period, code` | Every eligible stock outside the hold-out pool, per period: `band`, `median_turnover`, `close`, `ot` (in that month's Alphanume Optionable Tickers snapshot), `venue_inferred`, `exchange` (current or last), `name`, `reused_symbol` (the code is in both symbol lists). |
 | `pool_counts` | `period, band` | Eligible stocks per band, in each pool (the hold-out pool as a count only). |
-| `screen_dropped` | `period, code` | Why other tickers trading on the screen date were left out (`reason`, `detail`); rows naming a hold-out stock are removed. |
+| `screen_dropped` | `period, code` | Why other tickers trading on the screen date were left out (`reason`, `detail`). Rows naming a hold-out stock are removed: by code, by a code rooted on one (a preferred or warrant series), or by a description starting with one's name (a preferred described by its issuer). The match errs towards removing, so a few unrelated rows go too. |
 | `extract_info` | `key` | Build time, eodhd2 commit, seed, rules; from builds after 2026-11-19, the source db's path, size, mtime, sha1 and origin (`jml_db_*`). |
 
 ### `series_gaps.kind`
@@ -100,9 +100,9 @@ Acquirers are named only where a holder received their shares; a cash deal's buy
   - `HTZ-R-W` holds the old Hertz's bars, through its 2020 bankruptcy; it isn't Hertz's rights.
   - `_old` codes (e.g. `EV_old2`, the old Eaton Vance) are EODHD's names for an earlier company under a reused symbol.
 
-## This build: `jml_insample_2026-11-23.db`
+## This build: `jml_insample_2026-11-24.db`
 
-Replaces `jml_insample_2026-11-08.db`: the stopped series are researched, and three bad series found while doing so are replaced. Built from `jml.2026-11-23b.db` (`extract_info.jml_db_*`), eodhd2 commit 3494dba.
+Replaces `jml_insample_2026-11-08.db`: the stopped series are researched, and three bad series found while doing so are replaced. Built from `jml.2026-11-23b.db` (`extract_info.jml_db_*`), eodhd2 commit f306c03. Same data as the `jml_insample_2026-11-23.db` build, except that `screen_dropped` loses 487 more rows (those naming a hold-out stock by code root or issuer name).
 
 **Size and coverage**
 - 108 MB. 600 stock-periods, 527 distinct stocks (some drawn in two or more periods); 872,643 daily rows. EODHD returned data for every one.
