@@ -12,7 +12,7 @@ The first five were researched in detail in
 `doc/DELISTING_RESEARCH_2026-09-30.md`.
 
 Snapshot taken from production `sda.db` on 2026-10-14: 14 aliases (27 as of
-2026-10-22).
+2026-10-22; 33 as of 2026-11-24).
 
 ## Renames (new_code, ratio 1.0)
 
@@ -30,6 +30,7 @@ Same listed security under a new symbol; one continuous price series.
 | ETHZ.US | FRMM.US | 2026-03-02 | 2026-10-21 | 2026-07-03 | ETHZilla Corp. renamed Forum Markets, Inc., ETHZ->FRMM effective 2026-03-02 (OCC/MIAX notice). EODHD's ETHZ daily ends 02-27; FRMM identical 02-24..02-27. Tipped four months later under the old symbol; FRMM's 07-02 close 6.02 is inside the 5.80-6.05 entry zone. |
 | GLTO.US | DMRA.US | 2026-03-10 | 2026-10-22 | 2026-07-22 | Galecto, Inc. renamed Damora Therapeutics after acquiring Damora (Nov 2025); Nasdaq GLTO->DMRA effective 2026-03-10. EODHD serves nothing under GLTO. Tipped four months later under the old symbol; DMRA's 07-21 close 32.99 is inside the 31.80-33.15 entry zone. Outcome `pending` -> `closed_stop` (bought 07-22 open, stopped 07-23). |
 | GMGI.US | MRDN.US | 2026-05-05 | 2026-09-30 | 2026-08-21, 2026-08-27 | 1-for-12 reverse split + rename to Meridian Holdings, real date 2026-03-03; EODHD kept serving split-adjusted GMGI.US through 2026-05-04, so cutover is 05-05. 2026-05-04 close 12.85 identical on both. |
+| FIHL.US | PLGO.US | 2026-05-12 | 2026-11-24 | 2026-11-10 | Fidelis Insurance Holdings renamed Pelagos Insurance Capital, NYSE FIHL->PLGO from 2026-05-12 (company release). EODHD serves nothing under FIHL; PLGO holds the whole history. Tipped six months later under the old symbol; PLGO's 11-09 close 28.30 equals entry_zone_low. Outcome `pending` -> `open` (bought 11-10). |
 | SBLX.US | FABC.US | 2026-04-29 | 2026-10-18 | 2026-05-26 | StableX Technologies ticker change (aggregator gives 2026-04-29; not confirmed elsewhere). From 04-29 EODHD's SBLX 5m rows have no trades (vo=0, flat at the 04-28 close) while FABC 5m starts that day; SBLX daily kept going to 07-10 and matches FABC to 2dp rounding (05-26 5.87/6.04/5.15/5.43 on both). Outcome on the real bars: `aborted` (09:30 bar hit the 5.76 stop before the zone was reached at 10:05). |
 | CUK.US | CCL.US | 2026-05-07 | 2026-10-14 | 2026-04-17 | Carnival DLC unification: Carnival plc (CUK) merged 1-for-1 into Carnival Corporation Ltd (CCL); CUK suspended before open 2026-05-07. The two tracked near-identically while dual-listed. |
 | EXPI.US | AGNT.US | 2026-05-08 | 2026-10-14 | 2026-04-21 | eXp World Holdings rebranded AGNT Inc (Delaware → Texas). EODHD's EXPI.US and AGNT.US rows byte-identical through 2026-05-07. |
@@ -41,6 +42,17 @@ Same listed security under a new symbol; one continuous price series.
 | SATS.US | ECHO.US | 2026-06-24 | 2026-10-12 | 2026-10-06, 2026-10-13 | Ticker-only rename, EchoStar Corporation (EchoStar IR). |
 | FDP.US | DMC.US | 2026-06-27 | 2026-09-30 | 2026-08-25 | Fresh Del Monte Produce renamed Del Monte Corporation, effective 2026-06-29 (last FDP trade 06-26). 2026-06-26 close 29.22 identical on both. |
 | MBAV.US | VLOS.US | 2026-07-15 | 2026-10-21 | 2026-06-24, 2026-07-02 | M3-Brigade Acquisition V (SPAC) renamed Velos Acquisition I Corp. after the ReserveOne deal was dropped (shareholder meeting 2026-07-17). EODHD's MBAV 5m bars have no volume from 07-15 while MBAV daily runs to 07-29; VLOS daily is identical from 07-14, VLOS 5m only starts 07-23. Both outcomes closed before the rename (unchanged). MBAV 07-02 stays a standing dead-5m warning (see below). |
+| INDV.US | SUPN.US | 2026-11-03 | 2026-11-24 | 2026-09-30, 2026-10-20 | Indivior Pharmaceuticals merged with Supernus and took its name; Nasdaq INDV->SUPN from 2026-11-03 (Indivior release, 8-K). Indivior holders kept their shares and got an $8.13 special cash dividend: 36.28 -> 28.15 on 11-03, `ac` adjusted, so outcomes treats it like a spin-off (later bars scaled 1.29x). EODHD's INDV 5m bars are blank from 11-03; INDV daily (to 11-05) is identical to SUPN's. Both outcomes closed before (unchanged). |
+| VBNK.US | VRSA.US | 2026-11-17 | 2026-11-24 | 2026-11-10 | VersaBank reorganized under holding company Versa Bancorp, one share for one (32.6M issued), Nasdaq/TSX VBNK->VRSA with a new CUSIP from 2026-11-17 (company release; VBNK Form 15 the same day). VRSA's bars identical to VBNK's to 11-16. EODHD's 5m data is blank 11-17..11-19 under both symbols (a standing dead-5m warning, see below). Outcome unchanged (`closed_stop` 11-12). |
+
+## Symbol format (new_code, ratio 1.0)
+
+Not a corporate action: the newsletter writes a symbol differently from
+EODHD, so the alias applies from the security's first bar.
+
+| old_code | new_code | effective_date | Added | Tip dates affected | What happened / how verified |
+|---|---|---|---|---|---|
+| NEEPN.US | NEE-PN.US | 2019-03-18 | 2026-11-24 | 2026-11-06 | NextEra Energy Capital Holdings' Series N junior subordinated debentures (NYSE `NEE.PRN`), written NEEPN by the newsletter, NEE-PN.US by EODHD (first bar 2019-03-18). NEE-PN's 11-05 close 19.45 equals entry_zone_low. Outcome `pending` -> `closed_stop` (-1.03R, 11-17). |
 
 ## Stock-for-stock mergers (new_code, ratio ≠ 1.0)
 
@@ -65,6 +77,7 @@ as 5m bars too (see `DESIGN_DECISIONS.md`, "Intraday cash-out bars").
 | SLNO.US | 53.01 | 2026-05-19 | 2026-10-14 | 2026-04-23 | Soleno acquired by Neurocrine Biosciences, all-cash tender ($53.00), effective 2026-05-18. Last real close 53.01 matches the deal price. |
 | NUVL.US | 124.00 | 2026-07-15 | 2026-10-20 | 2026-06-19, 2026-06-25 | Nuvalent acquired by GSK, $124.00 cash tender; merger completed and delisted 2026-07-15 (8-K). Last real trade 07-14, close 123.96; EODHD then repeats 123.96 at zero volume. Both outcomes closed by time exit before the deal and are unchanged; the alias only completes daily coverage. |
 | WBD.US | 31.01666668 | 2026-10-06 | 2026-10-30 | 2026-09-11, 2026-10-02 | Warner Bros. Discovery acquired by Paramount Skydance, all cash ($31.00 agreed 2026-02-27, plus a ticking fee; $31.01666668 a share per insiders' Form 4s), completed 2026-10-06. Pinned at 30.84-30.95 for weeks; last real close 30.95 on 2026-10-05, on 436M shares (about 10x normal). Both outcomes unchanged (09-11 `closed_target` on 09-21; 10-02 `closed_time` at the 10-05 close); the alias only completes coverage. |
+| ATKR.US | 95.00 | 2026-10-19 | 2026-11-24 | 2026-04-24, 2026-06-10, 2026-09-10, 2026-09-16, 2026-09-22 | Atkore acquired by Prysmian for $95.00 cash, completed 2026-10-19 (Atkore 8-K). Pinned at 94.84-94.96 from 10-09; last trade 10-16, close 94.96. All five outcomes closed before (unchanged); the alias completes the 09-22 tip's daily coverage. |
 
 ## Investigated, no alias added
 
@@ -77,6 +90,8 @@ They'll keep appearing in the nightly log's `daily` line; that's expected.
 | THR.US | 2026-04-28 | Short by 1 day (last data 2026-05-22). Thermon's real merger is 2026-06-01, after this tip's window, so that isn't the cause. Outcome resolved anyway (`closed_target`). |
 | MBAV.US | 2026-06-24, 2026-07-02 | Alias added for the rename (above), but 2026-07-02, before the rename, has 5m bars with no volume while daily traded 689,100 shares (EODHD's 5m data for the day is empty), so the nightly dead-5m check warns about it every run. Neither outcome is affected (the 06-24 trade closed 07-01; the 07-02 tip entered 07-06). Accepted as a standing warning (2026-10-20). |
 | NVVE.US | 2026-07-17 | 1-for-18 reverse split 2026-07-06, symbol unchanged. EODHD's 5m data for 2026-07-24 is empty (78 blank bars) while daily traded 444,129 shares; 5m trades resume 07-27, so not a rename. The outcome is unaffected (`aborted` inside its 07-17..07-20 entry window). Accepted as a standing dead-5m warning (2026-10-22). |
+| VBNK.US | 2026-11-10 | Alias added (above), but EODHD's 5m data for 11-17..11-19 is blank under both VBNK and VRSA while daily traded, so the dead-5m check warns every run. The outcome closed on 11-12, before the gap. Accepted as a standing warning (2026-11-24). |
+| DLY.US | 2026-10-16 | Closed-end fund; EODHD has no intraday data for it (recorded in `intraday_unavailable`), so its outcome resolves from daily bars once its window closes. No alias needed. |
 
 ## Lessons from the research so far
 
@@ -93,3 +108,6 @@ They'll keep appearing in the nightly log's `daily` line; that's expected.
   bars under the old symbol are empty (SBLX: daily to 07-10, 5m empty from
   04-29; RVYL the same). Set `effective_date` from whichever feed stops first, and check the
   5m bars for vo=0 runs, not just whether rows exist.
+- The newsletter writes preferreds without EODHD's hyphen (NEEPN for
+  EODHD's NEE-PN.US). Search EODHD for the issuer's preferreds and match
+  the tip's entry zone, as for a rename.
