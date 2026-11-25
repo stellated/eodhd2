@@ -1,0 +1,22 @@
+code,date,ratio,verdict,kind,note,source
+RLOG.US,2018-01-05,61.716,bad,splice,"Rand Logistics at 0.15 on 2018-01-04 (delisted, then Chapter 11 with nothing for equity); another security at 9.35 from the next day",
+RRD.US,2015-12-17,0.012,bad,junk_bars,"Two weeks at about 1% of the price (2015-12-17 to 12-31), then back; ac on a different basis either side",
+RRD.US,2016-01-04,26.504,bad,junk_bars,"The end of the same fortnight of junk bars",
+CBD.US,2016-01-04,3.068,bad,basis_change,"ac triples with no event: the 2015 bars are on another basis",
+NVAX.US,2016-09-16,0.155,real,trial_result,"RSV vaccine failed its phase 3 RESOLVE trial (after the close 2016-09-15); closed 1.29, down 84.5%",https://www.cnbc.com/2016/09/16/novavax-plunges-80-after-failed-trial-analysts-downgrade.html
+MBOT.US,2016-05-31,0.188,real,deal_news,"StemCells Inc (MBOT's predecessor) announced a wind-down and strategic alternatives after its spinal cord injury trial",https://www.biospace.com/stemcells-ceo-cfo-and-three-directors-stepped-down-the-day-of-b-microbot-b-merger-that-boosted-stock-sevenfold
+MBOT.US,2016-08-16,7.027,real,deal_news,"Reverse merger with Microbot Medical announced; StemCells closed 2.60, up 603% (volume 1.7k -> 443k)",https://www.biospace.com/stemcells-ceo-cfo-and-three-directors-stepped-down-the-day-of-b-microbot-b-merger-that-boosted-stock-sevenfold
+MBOT.US,2019-01-14,4.079,real,product_news,"Self-cleaning shunt validation study and a European patent allowance; closed 9.79, up 308%",https://investorplace.com/?p=1312323
+NNDM.US,2020-05-19,4.417,real,product_news,"3D-printed electronics breakthrough announced with HENSOLDT; from about 0.77 to over 3",https://www.fabbaloo.com/blog/2020/5/19/nano-dimension-stock-price-spikes-after-3d-breakthrough
+SUNWQ.US,2020-09-24,3.388,real,meme_spike,"Sunworks (then SUNW) rose 300%+ on EV and Peck-merger speculation, volume many times normal; prior close 1.16",https://www.benzinga.com/news/20/09/17641832/why-sunworks-stock-is-trading-up-300-today
+ATXS.US,2020-10-27,0.291,real,trial_result,"Catabasis (ATXS's predecessor): edasalonexent failed its phase 3 PolarisDMD trial (2020-10-26 after the close)",https://www.statnews.com/2020/10/27/why-did-this-small-biotech-blow-up-because-spinning-bad-drug-data-never-works/
+ACRS.US,2021-01-19,3.202,real,trial_result,"Phase 2a ATI-450 rheumatoid arthritis data; closed 18.83, up 220% (424B5 gives the same last sale)",https://www.sec.gov/Archives/edgar/data/1557746/000110465921005890/tm213363-4_424b5.htm
+ARDX.US,2021-07-20,0.261,real,regulatory,"FDA letter citing deficiencies in the tenapanor NDA; 7.70 close the day before. EODHD's raw cl is 4x ac before this date (30.80); ac is right",https://cm.healio.com/news/nephrology/20210720/ardelyx-stock-drops-70-after-setback-with-fda-over-phosphorus-drug
+PHUN.US,2021-10-22,5.712,real,meme_spike,"Trump-SPAC (DWAC) sympathy spike: Phunware built the 2020 Trump campaign app; closed up 471%",https://www.fool.com/investing/2021/10/22/why-digital-world-acquisition-and-phunware-soared
+AVDL.US,2022-05-26,0.317,real,regulatory,"FDA ruled the FT218 patent statement inappropriate, pushing approval to about June 2023 (8-K for 2022-05-24)",https://www.sec.gov/Archives/edgar/data/1012477/000110465922064922/tm2216990d1_8k.htm
+PHUN.US,2024-01-16,5.526,real,meme_spike,"Trump-linked stocks jumped after the Iowa caucus; volume 82k -> 32M, gains held through January",https://investorplace.com/2024/01/why-is-phunware-phun-stock-up-57-today/
+SRRK.US,2024-10-07,4.620,real,trial_result,"Apitegromab met the primary endpoint of the phase 3 SAPPHIRE trial; up about 320%",https://www.biospace.com/drug-development/scholar-rocks-shares-soar-300-after-phase-iii-win-in-spinal-muscular-atrophy
+GPORQ.US,2020-03-13,6.850,bad,bad_print,"Close 2.74 = the day's high, 6x the 0.46 open; next open 0.70. No source for the true close, and EODHD still serves 2.74 (rechecked 2026-11-25)",
+AMC.US,2021-01-27,4.012,real,meme_spike,"GameStop-era Reddit short squeeze; up about 274-300% in a day, volume 122M",https://www.cbsnews.com/news/amc-theatres-stock-gains-2021-01-27/
+EVA.US,2023-05-04,0.328,real,earnings,"Q1 loss more than doubled, guidance cut and dividend eliminated; closed 7.01, down 67.2%",https://www.fool.com/investing/2023/05/04/why-enviva-stock-is-plunging-today
+ACRS.US,2023-11-13,0.136,real,trial_result,"Zunsemetinib phase 2b rheumatoid arthritis trial failed; 4.75 -> 0.69, down 86%",https://www.fiercebiotech.com/biotech/aclaris-stock-sinks-further-biotech-abandons-mk2-inhibitor-over-latest-phase-2-fail

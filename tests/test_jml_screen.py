@@ -116,19 +116,80 @@ def test_not_shares_by_code():
 def test_pre_period_problem(tmp_path):
     import sqlite3
     db = sqlite3.connect(tmp_path / "j.db")
-    db.execute("CREATE TABLE daily (code TEXT, date TEXT, vo INTEGER)")
+    db.execute("CREATE TABLE daily (code TEXT, date TEXT, vo INTEGER, ac REAL DEFAULT 1.0)")
     days = [(date(2014, 11, 3) + timedelta(days=i)).isoformat() for i in range(0, 1830)]
-    db.executemany("INSERT INTO daily VALUES ('SPY.US', ?, 1)", [(d,) for d in days])
-    db.executemany("INSERT INTO daily VALUES ('OK.US', ?, 1)", [(d,) for d in days])
-    db.executemany("INSERT INTO daily VALUES ('THIN.US', ?, ?)",
+    rows = [(d,) for d in days]
+    db.executemany("INSERT INTO daily (code, date, vo) VALUES ('SPY.US', ?, 1)", rows)
+    db.executemany("INSERT INTO daily (code, date, vo) VALUES ('OK.US', ?, 1)", rows)
+    db.executemany("INSERT INTO daily (code, date, vo) VALUES ('THIN.US', ?, ?)",
                    [(d, int(i % 5 != 0)) for i, d in enumerate(days)])  # 80% real
-    db.executemany("INSERT INTO daily VALUES ('VIENNA.US', ?, ?)",
+    db.executemany("INSERT INTO daily (code, date, vo) VALUES ('VIENNA.US', ?, ?)",
                    [(d, int(d[5:] != "12-26")) for d in days])
     start = date(2019, 11, 1)
     assert pre_period_problem(db, "OK.US", start) is None
     assert "80%" in pre_period_problem(db, "THIN.US", start)
     assert "26 December" in pre_period_problem(db, "VIENNA.US", start)
     assert "Russian" in pre_period_problem(db, "NLMK.US", start)
+
+
+def _jump_db(tmp_path, code, moves):
+    """SPY and `code` trading every day; `code`'s ac multiplied by each
+    {date: factor} from that date on."""
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "j.db")
+    db.execute("CREATE TABLE daily (code TEXT, date TEXT, vo INTEGER, ac REAL)")
+    days = [(date(2014, 11, 3) + timedelta(days=i)).isoformat() for i in range(0, 1830)]
+    db.executemany("INSERT INTO daily VALUES ('SPY.US', ?, 1, 1.0)", [(d,) for d in days])
+    ac = 10.0
+    for d in days:
+        ac *= moves.get(d, 1.0)
+        db.execute("INSERT INTO daily VALUES (?, ?, 1, ?)", (code, d, ac))
+    return db
+
+
+def test_ac_jumps_finds_moves_over_3x_either_way(tmp_path):
+    from scripts.jml_screen import ac_jumps
+    db = _jump_db(tmp_path, "J.US", {"2016-01-04": 0.25, "2017-03-01": 2.9, "2018-05-01": 3.5})
+    assert [(d, round(r, 2)) for d, r in ac_jumps(db, "J.US", "2015-01-01", "2019-11-01")] == \
+        [("2016-01-04", 0.25), ("2018-05-01", 3.5)]
+    assert ac_jumps(db, "J.US", "2016-01-05", "2018-05-01") == []  # [lo, hi)
+
+
+def test_pre_period_jumps_need_a_verdict(tmp_path, monkeypatch):
+    import scripts.jml_screen as js
+    csv = tmp_path / "v.csv"
+    csv.write_text("code,date,ratio,verdict,kind,note,source\n"
+                   "REAL.US,2016-01-04,0.25,real,trial_result,trial failed,x\n"
+                   "BAD.US,2016-01-04,0.25,bad,splice,two companies,\n")
+    monkeypatch.setattr(js, "JUMP_VERDICT_FILES", [csv, tmp_path / "missing.csv"])
+    monkeypatch.setattr(js, "_verdicts", None)
+    start = date(2019, 11, 1)
+    db = _jump_db(tmp_path, "REAL.US", {"2016-01-04": 0.25})
+    assert js.pre_period_problem(db, "REAL.US", start) is None
+    db.close()
+    (tmp_path / "j.db").unlink()
+    db = _jump_db(tmp_path, "BAD.US", {"2016-01-04": 0.25})
+    assert "splice" in js.pre_period_problem(db, "BAD.US", start)
+    db.close()
+    (tmp_path / "j.db").unlink()
+    db = _jump_db(tmp_path, "NEW.US", {"2016-01-04": 0.25})
+    with pytest.raises(SystemExit, match="no verdict"):
+        js.pre_period_problem(db, "NEW.US", start)
+    db.close()
+    (tmp_path / "j.db").unlink()
+    # a move after the period start is never a pre-period problem
+    db = _jump_db(tmp_path, "LATE.US", {"2019-11-05": 0.25})
+    assert js.pre_period_problem(db, "LATE.US", start) is None
+
+
+def test_jump_verdicts_reject_an_unknown_kind(tmp_path, monkeypatch):
+    import scripts.jml_screen as js
+    csv = tmp_path / "v.csv"
+    csv.write_text("code,date,ratio,verdict,kind,note,source\nX.US,2016-01-04,4,real,hunch,,\n")
+    monkeypatch.setattr(js, "JUMP_VERDICT_FILES", [csv])
+    monkeypatch.setattr(js, "_verdicts", None)
+    with pytest.raises(SystemExit, match="bad verdict/kind"):
+        js.jump_verdicts()
 
 
 

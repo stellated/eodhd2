@@ -9,6 +9,7 @@ turnover, before anything is drawn.
   jml_screen.py daily  --db-path ~/data/jml.db
   jml_screen.py validate --db-path ~/data/jml.db
   jml_screen.py events --db-path ~/data/jml.db
+  jml_screen.py jumps  --db-path ~/data/jml.db
 
 `fetch` stores, in jml.db (on mars, not sda.db):
 - `sessions`: SPY's trading days, 2014 to 2025 (1 call);
@@ -42,6 +43,23 @@ shares on another exchange, and an FX rate) into `follow_on_daily`, from
 45 days before the stop (so the deal terms can be checked against the
 last closes) to the stock-period's span end. Raw EODHD bars, no padding,
 dates in the follow-on market's own calendar.
+
+The 3x rule (jml, 2026-11-25; part of the frozen check for the hold-out):
+any one-day move in `ac` of more than JUMP_FACTOR either way, between
+consecutive bars with volume, must have a recorded verdict before the
+stock-period is accepted (jump_verdicts(); in-sample verdicts in
+scripts/jml_jump_verdicts.csv, hold-out ones in a file outside the repo).
+`real` needs a dated, sourced event: a trial or regulatory result,
+earnings or a dividend cut, deal news, product news, a financing or
+bankruptcy step, or a retail/meme spike on many times normal volume that
+holds for days. `bad` is a splice of two securities, a stretch of junk
+bars, an `ac` basis change with no event, a single bad print, or a split
+EODHD didn't adjust. No event found counts as `bad`. In the 5 years
+before the period a `bad` verdict replaces the stock-period (reason in
+draw_rejects); in the period and outcome year it only flags it, since
+replacing there would select on what happened after the period started.
+`jumps` lists every move in the in-sample stock-periods' spans, by
+segment, with its verdict.
 """
 import argparse
 import io
@@ -100,6 +118,14 @@ REJECT_BY_HAND = {
            "different basis either side",
     "CBD": "ac jumps 3x on 2016-01-04 with no event: 2015 bars on another basis",
 }
+# the 3x rule (see the module docstring)
+JUMP_FACTOR = 3.0
+JUMP_VERDICT_FILES = [Path(__file__).resolve().with_name("jml_jump_verdicts.csv"),
+                      Path.home() / "data" / "jml_jump_verdicts_holdout.csv"]
+JUMP_KINDS = {"real": {"trial_result", "regulatory", "earnings", "deal_news", "product_news",
+                       "financing", "meme_spike"},
+              "bad": {"splice", "junk_bars", "basis_change", "bad_print", "unadjusted_split",
+                      "no_event"}}
 SEED = 20261105
 # per band: (in-sample, hold-out); Ian, 2026-10-30 and 2026-11-05
 DRAW_SIZES = {"above_50m": (40, 13), "10m_50m": (30, 10), "1m_10m": (30, 10)}
@@ -483,6 +509,35 @@ def stock_period_span(start: date, end: date) -> tuple[date, date]:
             one_after + timedelta(days=FETCH_MARGIN_DAYS))
 
 
+def ac_jumps(db: sqlite3.Connection, code: str, lo: str, hi: str,
+             factor: float = JUMP_FACTOR) -> list[tuple[str, float]]:
+    """(date, ratio) for each one-day move in ac of more than `factor` either
+    way between consecutive bars with volume, the later bar in [lo, hi)."""
+    rows = db.execute("SELECT date, ac FROM daily WHERE code = ? AND vo > 0 AND date < ? "
+                      "ORDER BY date", (code, hi)).fetchall()
+    return [(d1, a1 / a0) for (_, a0), (d1, a1) in zip(rows, rows[1:])
+            if d1 >= lo and a0 and a1 and not 1 / factor <= a1 / a0 <= factor]
+
+
+_verdicts: dict | None = None
+
+
+def jump_verdicts() -> dict[tuple[str, str], dict]:
+    """(code, date) -> verdict row, from JUMP_VERDICT_FILES (a missing file
+    is skipped). Every row must be `real` or `bad` with a known kind."""
+    global _verdicts
+    if _verdicts is None:
+        _verdicts = {}
+        for path in JUMP_VERDICT_FILES:
+            if not path.exists():
+                continue
+            for r in pd.read_csv(path, dtype=str).fillna("").to_dict("records"):
+                if r["kind"] not in JUMP_KINDS.get(r["verdict"], ()):
+                    raise SystemExit(f"{path.name}: bad verdict/kind for {r['code']} {r['date']}")
+                _verdicts[(r["code"], r["date"])] = r
+    return _verdicts
+
+
 def pre_period_problem(db: sqlite3.Connection, code: str, start: date):
     """Why a stock-period fails validation, or None. Only data before the
     period start is used, so a later collapse can't remove a stock."""
@@ -501,6 +556,13 @@ def pre_period_problem(db: sqlite3.Connection, code: str, start: date):
     dec26 = [d for d in sessions if d[5:] == "12-26"]
     if dec26 and not real & set(dec26):
         return f"no trade on 26 December in {len(dec26)} years (a foreign calendar)"
+    for d, ratio in ac_jumps(db, code, lo, hi):
+        v = jump_verdicts().get((code, d))
+        if v is None:
+            raise SystemExit(f"{code}: ac moves {ratio:.2f}x on {d} with no verdict; review it "
+                             "and record one (see the 3x rule) before validating")
+        if v["verdict"] == "bad":
+            return f"ac moves {ratio:.2f}x on {d} with no event ({v['kind']}): {v['note']}"
     return None
 
 
@@ -575,6 +637,25 @@ def validate(db: sqlite3.Connection, api: "Eodhd") -> None:
                  reason)
     print(pd.read_sql("SELECT * FROM draw_rejects ORDER BY period, band", db)
           .to_string(index=False))
+
+
+def jump_report(db: sqlite3.Connection, sample: str = "in_sample") -> pd.DataFrame:
+    """Every 3x move in the drawn stock-periods' spans: segment (pre, period,
+    outcome), verdict and note. Only `pre` moves can replace a stock-period."""
+    out = []
+    for period, s, e in PERIODS:
+        lo, hi = stock_period_span(s, e)
+        lo, hi = lo.isoformat(), (hi + timedelta(days=1)).isoformat()
+        for (code,) in db.execute("SELECT code FROM draw WHERE period = ? AND sample = ? "
+                                  "ORDER BY code", (period, sample)).fetchall():
+            for d, ratio in ac_jumps(db, code, lo, hi):
+                seg = ("pre" if d < s.isoformat() else
+                       "period" if d <= e.isoformat() else "outcome")
+                v = jump_verdicts().get((code, d), {})
+                out.append((period, code, d, seg, round(ratio, 3), v.get("verdict", "UNREVIEWED"),
+                            v.get("kind", ""), v.get("note", "")))
+    return pd.DataFrame(out, columns=["period", "code", "date", "segment", "ratio", "verdict",
+                                      "kind", "note"])
 
 
 def fetch_one(db: sqlite3.Connection, api: "Eodhd", period: int, code: str, lo: date,
@@ -697,7 +778,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("action", choices=["fetch", "report", "draw", "daily", "validate",
-                                       "events"])
+                                       "events", "jumps"])
     p.add_argument("--db-path", required=True, type=Path)
     p.add_argument("--alphanume-db", type=Path, default=Path.home() / "data" / "alphanume.db")
     args = p.parse_args()
@@ -711,6 +792,8 @@ def main() -> None:
          "events": load_events}[args.action](db, api)
     elif args.action == "draw":
         draw(db)
+    elif args.action == "jumps":
+        print(jump_report(db).to_string(index=False))
     else:
         alpha = sqlite3.connect(f"file:{args.alphanume_db}?mode=ro", uri=True)
         report(db, alpha)

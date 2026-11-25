@@ -2315,6 +2315,35 @@ separate bulk pull.
 uploaded to `onedrive:Data/StockDataAnalytics/mars/`, per "Extracts are
 built from a named, kept snapshot".
 
+### jml's 3x rule, written down for the hold-out (2026-11-25)
+**Request (jml):** the one-day `ac` jump scan that found RLOG, RRD and CBD
+(entry above) must be part of the frozen check, so the hold-out is cleaned
+the same way as the in-sample (otherwise in-sample/hold-out differences
+are partly data artefacts); and the period and outcome years should be
+scanned too, flagging rather than replacing.
+
+**Decision:** `scripts/jml_screen.py` now enforces it.
+- `ac_jumps()` finds moves over `JUMP_FACTOR` (3x) either way between
+  consecutive bars with volume.
+- `pre_period_problem()` (so `validate`) refuses to pass a stock-period
+  with a pre-period move that has no verdict, and replaces it if the
+  verdict is `bad`. The checklist and kinds are in the module docstring
+  and `JUMP_KINDS`; no event found counts as `bad`.
+- Verdicts are data, not code: `scripts/jml_jump_verdicts.csv` for
+  in-sample stocks; hold-out verdicts go in
+  `~/data/jml_jump_verdicts_holdout.csv`, outside the repo, so no
+  hold-out code is committed.
+- `jumps` reports every move in the in-sample spans by segment (pre,
+  period, outcome) with its verdict. Moves after the period start are
+  only ever flags.
+
+**In-sample result:** the current draw is unchanged (every pre-period
+move is a sourced real event). One outcome-year flag: GPORQ 2020-03-13, a
+bad close of 2.74 (6x the open, at the high; the next open is 0.70),
+still served by EODHD. Also noted: ARDX's raw `cl` is 4x `ac` before
+2021-07-20 with no split behind it; `ac` is right, and the screen (period
+5, 2023) uses later bars, so nothing changes.
+
 ### Alphanume trial capture: raw responses first, parse later (2026-10-23)
 **Context:** alphanume now offers a 3-day free trial with full Pro access
 (see `DAProjects/Alphanume Trial Plan.md`). Nothing is reachable without a
