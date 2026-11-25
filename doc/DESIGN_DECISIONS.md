@@ -1868,6 +1868,14 @@ date's price terms: CVNA's `sell_price` is 364.51, i.e. 72.90 x 5.
 holder (the value lost from the share price is held in the spun-off
 shares), and neither outcome changed.
 
+**Large special dividends too (Ian, 2026-11-24: good enough for now):**
+INDV/SUPN paid $8.13 cash on 2026-11-03 (36.28 -> 28.15, 1.29x), which
+the same rule treats as a split. Scaling the later bars up by a ratio
+approximates the holder's value (shares plus the cash); the exact
+treatment would add the fixed amount instead. A dividend under 25% of
+the price isn't adjusted at all. Neither INDV outcome spans the date.
+Revisit if a tip's position does.
+
 **Verification:** a full rebuild on a copy of production changed 4 of 5,293
 rows. CVNA went to `closed_stop` at -1.01R on 05-13 (low 72.97 x 5 is
 below the 364.87 stop). The other three weren't split-related: CBZ
