@@ -706,6 +706,21 @@ it; IG's row under the old symbol is then dropped as a reused listing).
 `ig_code` = IG's symbol, `renamed_on` = the alias date -- see
 `doc/DESIGN_DECISIONS.md`, "IG's old file was frozen at 2024-04-10".
 
+## scripts/get_optionable.py — daily optionable-stock capture (added 2026-11-26)
+
+Weekdays at 18:30 New York (`eodhd-optionable.timer` →
+`ops/run_optionable.sh`): downloads OCC's option underlyings, Cboe's
+symbol directory and weeklys list (US), ASX's derivatives master list
+(AU), and EODHD's US/AU symbol lists, into `~/data/optionable.db`
+(copied to `onedrive:.../mars/optionable.db` after each run; raw files
+to `mars/optionable_raw/<date>/`). Tables: `captures` (one row per
+source per day: bytes, sha1, rows, `as_of`, archive path, error),
+`us_symbols`, `au_underlyings`, and the view `optionable` (eligible rows
+of both markets in Alphanume's shape: `capture_date, market, ticker,
+code, has_weeklies, avg_days_between`). The eligibility rules and their
+match to Alphanume are in `doc/DESIGN_DECISIONS.md`, "Optionable stocks,
+captured daily".
+
 ## Dependencies
 
 ```

@@ -152,6 +152,9 @@ shortable. The current IG file omits names delisted since, so the last
   turnover, >= $2), depending on the turnover band.
 - **Verdict:** useful as a universe and a liquidity flag; point-in-time
   untested. Used by `qgmi` and `jml`.
+- **After 2026-10-01:** continued (US) and extended to the ASX by our own
+  daily capture from 2026-11-26, `optionable.db` (see
+  `doc/DESIGN_DECISIONS.md`, "Optionable stocks, captured daily").
 
 ### Reverse Splits
 

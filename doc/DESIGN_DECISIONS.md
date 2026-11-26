@@ -2471,6 +2471,66 @@ belongs wherever the 1m-to-5m aggregation gets written.
 
 ---
 
+### Optionable stocks, captured daily: US and AU (2026-11-26)
+**Problem:** Alphanume's Optionable Tickers history (monthly, 2019-01 to
+2026-10-01) stops where the trial did, and Ian wanted an Australian
+equivalent too. No free source serves history: OCC, Cboe and ASX publish
+only the current list, and EODHD's options add-on (US only, about a year
+of history, $29.99 a month) isn't on our subscription and has nothing for
+the ASX. So the only way to have this history later is to capture it now.
+
+**Decision (Ian):** `scripts/get_optionable.py`, daily on weekdays
+(`eodhd-optionable.timer`, 18:30 New York), into its own
+`~/data/optionable.db`, copied to OneDrive after each run like
+`alphanume.db`. Sources:
+- **US:** OCC's list of option underlyings, Cboe's symbol directory and
+  Cboe's list of available weeklys;
+- **AU:** ASX's derivatives master list (every listed option series);
+- **EODHD's US and AU symbol lists** (2 calls), to classify each
+  underlying on the same day.
+
+Raw downloads are gzipped unchanged into `optionable_raw/<date>/` and
+copied to OneDrive (`mars/optionable_raw/`), kept locally 14 days. Each
+download is checked for its header and a minimum row count; a market's
+rows are stored only if all its sources arrived, and a failed source
+fails the run (so the alert fires).
+
+**The US rule, matched to Alphanume:** an OCC underlying that EODHD types
+as Common Stock on NYSE, NASDAQ or AMEX, and isn't an ADR by name
+(ADR/ADS/depositary/NY registry). Alphanume's list has no ETFs, ADRs or
+OTC names; OCC's has about 2,150 ETFs and 280 ADRs besides. Against
+Alphanume's last snapshot (2026-10-01, 3,533 tickers), the first capture
+(2026-11-26) keeps 3,532, 3,480 in both. The 53 and 52 either side are
+about what Alphanume's own list changed over two months (08-03 to 10-01:
+50 out, 37 in); most are renames, takeovers and new listings since 10-01,
+and about 10 are ADRs Alphanume kept (AZN). `has_weeklies` comes from
+Cboe's weeklys list (548 eligible, against Alphanume's 557).
+`avg_days_between` isn't available for the US (it would need per-symbol
+expiry data). OCC writes class shares without the dot (BRKB); they're
+matched to EODHD's BRK-B.
+
+**The AU rule:** an underlying with options over stock (`ProductType`
+OS; LEPOs and XJO index options are kept in `au_underlyings` but not
+eligible) that EODHD types as Common Stock. 114 eligible on 2026-11-27,
+plus 4 ETFs (STW, IVV, NDQ, GOLD) kept but not eligible, as in the US.
+`has_weeklies` (24: the banks, big miners, CSL, WES, WOW...) and
+`avg_days_between` come straight from the listed expiries. An adjusted
+class after a corporate action (GMDN beside GMD, seen 2026-11-25) maps to
+its stock and isn't counted twice. ASX's file is dated for the next
+business day (generated 14:55 AEST); that date is `captures.as_of`.
+
+**Caveats for analysis:**
+- The two sources are spliced at 2026-10-01 / 2026-11-26: Alphanume
+  monthly before, ours daily after, with a gap between, and our rule is
+  an approximation of Alphanume's (about 1-2% of names differ by
+  definition). Extracts keep the source visible.
+- AU has no history before 2026-11-26. Today's list used as a stand-in
+  for earlier years misses stocks that lost their options before today
+  (survivorship).
+- Only about 120 AU names: the top 100 or so and a few liquid mid-caps.
+
+---
+
 ## v2.0 deferred features
 
 These were discussed and explicitly deferred:

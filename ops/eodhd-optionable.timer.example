@@ -1,0 +1,17 @@
+# Copy to ops/eodhd-optionable.timer (drop the .example), then symlink
+# into /etc/systemd/system/ and `systemctl enable --now`.
+
+[Unit]
+Description=Run eodhd-optionable weekdays
+
+[Timer]
+# None of the sources keeps past versions, so a day missed is lost.
+# 18:30 New York: after OCC/Cboe's day, and ASX's master list (generated
+# 14:55 AEST for the next business day) is already out. Clear of the
+# 21:00 IG run and the Saturday 04:00 run (different db anyway).
+OnCalendar=Mon..Fri *-*-* 18:30:00 America/New_York
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

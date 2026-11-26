@@ -1,0 +1,17 @@
+# Copy to ops/eodhd-optionable.service (drop the .example), edit the
+# User=/WorkingDirectory=/ExecStart= paths for this machine, then symlink
+# into /etc/systemd/system/ and `systemctl enable --now
+# eodhd-optionable.timer`. Gitignored because of those host-specific
+# paths -- see doc/DESIGN_DECISIONS.md ("Optionable stocks, captured daily").
+
+[Unit]
+Description=Daily US/AU optionable-stock capture
+Wants=network-online.target
+After=network-online.target
+OnFailure=eodhd-failure-alert@%n.service
+
+[Service]
+Type=oneshot
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/repos/eodhd2
+ExecStart=/home/YOUR_USERNAME/repos/eodhd2/ops/run_optionable.sh

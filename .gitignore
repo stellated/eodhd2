@@ -39,3 +39,5 @@ ops/eodhd-alphanume-*.timer
 
 # editor swap files
 *.swp
+ops/eodhd-optionable.service
+ops/eodhd-optionable.timer
